@@ -1,0 +1,17 @@
+# Virtual Environment
+env/
+
+# Secrets and Keys (CRITICAL)
+git_key
+
+# Python Standard Exclusions
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# OS Specific
+.DS_Store
+Thumbs.db
