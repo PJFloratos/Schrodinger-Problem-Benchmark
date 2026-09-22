@@ -1,16 +1,22 @@
-from src.utils import EMAHelper
+from src.utils import EMAHelper, save_model
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
-from tqdm import tqdm
 
 import math
+from tqdm import tqdm
+from typing import Union
+
+
+# def reference_drift(x: torch.Tensor) -> torch.Tensor:
+#     """Ornstein-Uhlenbeck reference process used for the very first forward pass."""
+#     return -x
 
 
 def reference_drift(x: torch.Tensor) -> torch.Tensor:
-    """Ornstein-Uhlenbeck reference process used for the very first forward pass."""
-    return -x
+    """Standard Brownian Motion reference process (zero drift)."""
+    return torch.zeros_like(x)
 
 
 class IPFTrainer:
@@ -218,7 +224,13 @@ class IPFTrainer:
 
         return total_loss / num_iter
 
-    def fit(self, ipf_iterations: int, inner_iterations: int = 5000):
+    def fit(
+        self,
+        ipf_iterations: int,
+        inner_iterations: int = 5000,
+        save_per: Union[int, None] = None,
+        save_path: Union[str, None] = None,
+    ):
         for n in range(ipf_iterations):
             print(f"\n--- IPF Iteration {n+1}/{ipf_iterations} ---")
 
@@ -246,27 +258,22 @@ class IPFTrainer:
                 f"Iteration {n+1} | Forward Loss: {f_loss:.6f} | Backward Loss: {b_loss:.6f}"
             )
 
+            # --- Intermediate Checkpoint Saving ---
+            if save_per and save_path and ((n + 1) % save_per == 0):
+                # Generate a temporary copy with EMA weights applied for an accurate checkpoint
+                temp_b_model = self.ema_b.ema_copy(self.b_model)
+                save_model(
+                    temp_b_model,
+                    f"{save_path}/{self.b_model.__class__.__name__}_backward_checkpoint_{n+1}.pth",
+                )
+
         # Load smoothed weights into the models used for evaluation
         self.ema_f.ema(self.f_model)
         self.ema_b.ema(self.b_model)
 
-    ############ SAMPLING
-
-    @torch.no_grad()
-    def sample(
-        self, x0: torch.Tensor, direction: str = "b", drop_last_noise: bool = True
-    ):
-        """
-        Euler-Maruyama on the *training* grid (same h as in training).
-        direction="b": x0 ~ N(0, I) -> data.   direction="f": x0 = data -> prior.
-        Uses the current weights (call after fit(), which loads the EMA weights).
-        """
-        net = self.b_model if direction == "b" else self.f_model
-        net.eval()
-        x = x0.to(self.device)
-        for i in range(self.sde_steps):
-            t = torch.full((x.shape[0], 1), i * self.h, device=self.device)
-            x = x + self.h * net(x, t)
-            if not (drop_last_noise and i == self.sde_steps - 1):
-                x = x + math.sqrt(self.h) * torch.randn_like(x)
-        return x
+        # --- Final Model Saving ---
+        if save_path:
+            save_model(
+                self.b_model,
+                f"{save_path}/{self.b_model.__class__.__name__}_backward_final.pth",
+            )

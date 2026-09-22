@@ -20,14 +20,14 @@ class BaseConfig:
     )
 
     # --- Training ---
-    model_type: str = "sde"  # in [sde, minibatch, flow_m, ipf]
-    model_name: str = "SDET"  # in [SDE, ODE, FM, IPF]
-    epochs: int = 5
+    model_type: str = "ipf"  # in [sde, minibatch, flow_m, ipf]
+    model_name: str = "IPF"  # in [SDE, ODE, FM, IPF]
+    epochs: int = 25
     batch_size: int = 512
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
     sim_steps: int = 30
-    num_iter: int = 5000
+    num_iter: int = 1000
     num_cache_batches: int = 10
     save_interval: int = 500
 

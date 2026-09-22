@@ -70,9 +70,14 @@ def generate_and_plot(generative_model, eval_res, cfg):
             bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
         )
 
-        save_path = os.path.join(
-            cfg.plots_path, f"{cfg.epochs}ep_{cfg.sim_steps}ss.png"
-        )
+        if cfg.model_type == "ipf":
+            save_path = os.path.join(
+                cfg.plots_path, f"{cfg.epochs}ep_{cfg.sim_steps}ss_{cfg.num_iter}.png"
+            )
+        else:
+            save_path = os.path.join(
+                cfg.plots_path, f"{cfg.epochs}ep_{cfg.sim_steps}ss.png"
+            )
         plt.savefig(save_path)
         plt.close()
 
@@ -80,9 +85,15 @@ def generate_and_plot(generative_model, eval_res, cfg):
         x_gen = generative_model.generate(
             n_samples=64, steps=cfg.eval_sim_steps, device=cfg.device
         )
-        save_path = os.path.join(
-            cfg.plots_path, f"{cfg.epochs}ep_{cfg.sim_steps}ss_grid.png"
-        )
+        if cfg.model_type == "ipf":
+            save_path = os.path.join(
+                cfg.plots_path,
+                f"{cfg.epochs}ep_{cfg.sim_steps}ss_{cfg.num_iter}_grid.png",
+            )
+        else:
+            save_path = os.path.join(
+                cfg.plots_path, f"{cfg.epochs}ep_{cfg.sim_steps}ss_grid.png"
+            )
         plot_samples(
             x_gen, eval_res, path=save_path, title="MNIST Generated Samples (t=1)"
         )

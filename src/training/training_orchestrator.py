@@ -65,7 +65,12 @@ class TrainingOrchestrator:
             num_cache_batches=self.cfg.num_cache_batches,
         )
 
-        trainer.fit(ipf_iterations=self.cfg.epochs, inner_iterations=self.cfg.num_iter)
+        trainer.fit(
+            ipf_iterations=self.cfg.epochs,
+            inner_iterations=self.cfg.num_iter,
+            save_per=self.cfg.save_interval,
+            save_path=self.cfg.models_path,
+        )
 
         return b_model
 
