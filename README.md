@@ -54,3 +54,59 @@ This repository is built with a strong emphasis on **modularity, separation of c
   * **`distances.py`**: A pure mathematics module isolated from PyTorch data loaders. It handles heavy computations like the Maximum Mean Discrepancy (MMD) with median-heuristic RBF kernels and Wasserstein distances.
 
 * **`src/utils/` (Shared Utilities):** Includes centralized Exponential Moving Average (`EMAHelper`) tracking for model weights, robust artifact saving (`save.py`), and dynamic grid/scatter visualization routing (`plot.py`).
+
+
+---
+
+## How to Run the Experiments
+
+Running an experiment is entirely configuration-driven. You do not need to modify the training loops or orchestration logic to launch different methodologies.
+
+**Step 1: Select the Target Dataset**
+Open `train.py` and set the `ACTIVE_DATASET` flag to your desired dataset at the top of the file:
+
+```python
+# train.py
+class DatasetType(str, Enum):
+    TOY2D = "toy2d"
+    MNIST = "mnist"
+
+# Pick the dataset to train on
+ACTIVE_DATASET = DatasetType.TOY2D
+
+```
+
+**Step 2: Configure the Methodology and Hyperparameters**
+Global training parameters (epochs, steps, learning rate) and the generative methodology are controlled in `src/configs/base_config.py`. Change the `model_type` to switch between algorithms:
+
+```python
+# src/configs/base_config.py
+    # ...
+    # --- Training ---
+    model_type: str = "sde"  # Options: "sde", "minibatch", "flow_m", "ipf"
+    model_name: str = "SDE"
+    epochs: int = 5
+    batch_size: int = 512
+    ...
+
+```
+
+For dataset-specific parameters (like the 2D shape type or image channels), open the corresponding child configuration file (e.g., `src/configs/toy_2d_config.py`):
+
+```python
+# src/configs/toy_2d_config.py
+    # ...
+    dataset_name: str = "Checkerboard"
+    dataset_type: str = "checkerboard"  # Options: "swiss_roll", "moons", "checkerboard"
+    ...
+```
+
+**Step 3: Execute the Pipeline**
+Once your configurations are set, simply run the entry point from your terminal. The Orchestrator will automatically route your configuration to the correct dataset, model architecture, and training strategy.
+
+```bash
+python train.py
+
+```
+
+Artifacts (saved models, training logs, and generated distribution plots) will be dynamically routed and saved in `./models`, `./logs`, and `./plots` under subdirectories named after your chosen dataset and model type.
