@@ -6,7 +6,7 @@ This document outlines the theoretical foundations and practical implementations
 
 The SDE solver leverages the Generator Matching (GM) framework to approximate solutions to the Schrödinger Problem (SP). Because the exact optimal coupling $\hat{\pi}$ of the true Schrödinger Bridge is a complex, action-minimizing joint distribution, deriving the exact conditional paths is analytically intractable.
 
-To achieve a scalable solution, this solver introduces a deliberate mathematical relaxation: it assumes an independent coupling between the prior and the data distribution, such that $\hat{\pi}(\mathrm{d}x_0 \mid z) \approx \mu_0(\mathrm{d}x_0)$. Assuming the reference measure is a reversible Brownian motion and the prior is a standard Gaussian $\mu_0 = \mathcal{N}(0, \mathbf{I})$, the conditional density becomes strictly Gaussian: $\mu_t(x \mid z) = \mathcal{N}(x; tz, (1-t)\mathbf{I})$.
+To achieve a scalable solution, this solver introduces a deliberate mathematical relaxation: it assumes an independent coupling between the prior and the data distribution, such that $\hat{\pi}(\mathrm{d}x_0 \mid z) \approx \mu_0(\mathrm{d}x_0)$. Assuming the reference measure is a reversible Brownian motion and the prior is a standard Gaussian $\mu_0 = \mathcal{N}(0, \mathbf{I})$, the conditional density becomes strictly Gaussian: $\mu_t(x \mid z) = \mathcal{N}(x; tz, (1-t)\mathbf{I})$ ([Generator Matching](https://arxiv.org/pdf/2410.20587), [ A survey of the Schrödinger problem and some of its connections with optimal transport](https://arxiv.org/pdf/1308.0215)).
 
 This specific structural simplicity allows the Fokker-Planck and Hamilton-Jacobi-Bellman (HJB) equations to collapse, yielding a unique, closed-form conditional vector field:
 
@@ -31,23 +31,20 @@ The Minibatch solver utilizes the exact same theoretical foundation and closed-f
 
 Flow Matching provides a simulation-free framework for training continuous normalizing flows. Unlike the SDE solver which targets the drift of a diffusion process, Standard Flow Matching defines a deterministic, probability density path directly between the prior $\mathcal{N}(0, \mathbf{I})$ and the target data distribution.
 
-The standard approach defines constant-velocity trajectories connecting the noise $x_0$ to the data $z$:
-
+The standard approach defines constant-velocity trajectories connecting the noise $x_0$ to the data $z$ ([Flow Matching for Generative Modeling](https://arxiv.org/pdf/2210.02747)):
 
 $$x_t = (1 - t)x_0 + tz$$
 
-
 The corresponding target vector field is simply the constant velocity required to move from $x_0$ to $z$:
-
 
 $$u_t(x \mid z) = z - x_0$$
 
-
 The network is trained using a standard Mean Squared Error loss to match this vector field. Like the Minibatch solver, Standard Flow Matching is highly compatible with minibatch optimal transport to straighten the global flow and reduce trajectory intersection.
+
 
 ## 4. Diffusion Schrödinger Bridge (IPF)
 
-The Diffusion Schrödinger Bridge (DSB) algorithm seeks the true, entropy-minimizing optimal path measure $\hat{P}$ of the Schrödinger Problem. As established in the Generator Matching framework, analytical conditional vector fields can only be derived when the coupling is independent and the conditional density remains Gaussian.
+The Diffusion Schrödinger Bridge (DSB) algorithm seeks the true, entropy-minimizing optimal path measure $\hat{P}$ of the Schrödinger Problem ([Diffusion Schrödinger Bridge with Applications to Score-Based Generative Modeling](https://arxiv.org/pdf/2106.01357)). As established in the Generator Matching framework, analytical conditional vector fields can only be derived when the coupling is independent and the conditional density remains Gaussian.
 
 Once a neural network learns an initial joint distribution, the intermediate conditional densities lose their Gaussian structure, making the PDEs intractable and analytical regression targets impossible to derive. To overcome this hard theoretical limit, the DSB abandons closed-form targets entirely and relies on Iterative Proportional Fitting (IPF).
 
@@ -57,12 +54,3 @@ The IPF algorithm operates by alternating between two Stochastic Differential Eq
 * **Backward Phase:** Simulates trajectories from the newly updated backward model and trains the forward neural network to match them.
 
 While this alternating simulation demands significantly higher computational resources than single-shot Generator Matching, it allows the system to continuously refine the complex, non-linear joint coupling $\hat{\pi}$, successfully recovering the true optimal Schrödinger Bridge without relying on suboptimal analytical relaxations.
-
----
-
-### Academic References
-
-* **Generator Matching:** *Generator Matching for Generative Modeling* (Note: Ensure the exact citation format matches your institution's specific referencing style for the official GM paper).
-* **Schrödinger Problem Theory:** Léonard, C. (2014). *A survey of the Schrödinger problem and some of its connections with optimal transport*. Discrete and Continuous Dynamical Systems - A.
-* **Flow Matching:** Lipman, Y., Chen, R. T. Q., Ben-Hamu, H., Nickel, M., & Le, Matt. (2023). *Flow Matching for Generative Modeling*. International Conference on Learning Representations (ICLR).
-* **Diffusion Schrödinger Bridge:** De Bortoli, V., Thornton, J., Heng, J., & Doucet, A. (2021). *Diffusion Schrödinger Bridge with Applications to Score-Based Generative Modeling*. Advances in Neural Information Processing Systems (NeurIPS).
