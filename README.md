@@ -1,5 +1,16 @@
 # Schrodinger-Problem-Benchmark
 
+## Foundational Literature
+* [Foundations of Schrodinger Bridges for Generative Modeling](https://arxiv.org/pdf/2603.18992): This paper provides the modern mathematical foundation linking optimal transport, stochastic control, and path-space optimization directly to contemporary generative models.
+
+* [A Survey of the Schrödinger Problem and some of its Connections with Optimal Transport](https://arxiv.org/pdf/1308.0215): This foundational survey bridges classical statistical physics and modern probability, detailing the entropy-minimization constraints and static optimal transport connections that underpin our Iterative Proportional Fitting (IPF) implementations.
+
+* [Building the Bridge of Schrödinger: A Continuous Entropic Optimal Transport Benchmark](https://arxiv.org/pdf/2306.10161): This paper introduces the methodology for creating continuous benchmark distributions where the ground truth Entropic Optimal Transport (EOT) solution is mathematically known by construction.
+
+To navigate the implemented solvers, analytical trade-offs, and planned architectural extensions, please refer to the `docs/` directory.
+
+---
+
 ## Codebase Architecture & Pipeline
 
 This repository is built with a strong emphasis on **modularity, separation of concerns, and scalability**.
