@@ -8,18 +8,10 @@ Those will be implemented on IPF first and on the other solvers later on.
 
 | Diagnostic | Signal / Purpose | Implementation Notes |
 | --- | --- | --- |
-| **Inner-Phase Loss Curve** | Verifies if `inner_iterations` allows the regression to actually converge, or if phases are truncating early.
-
- | Log continuously; do not rely solely on phase averages. |
-| **Gradient Norm** (Pre-clip) | Indicates if gradient clipping is necessary/active and flags numerical instability at high $\epsilon$ or in high dimensions.
-
- | Track before `clip_grad_norm_` is applied. |
-| **Effective Learning Rate** | Sanity check to ensure your cosine decay schedule is functioning as intended within each phase.
-
- |  |
-| **Cache Staleness** | Detects model drift. If regression loss visibly jumps at cache boundaries, `refresh_every` is too large.
-
- | Log the loss immediately before and after cache regeneration. |
+| **Inner-Phase Loss Curve** | Verifies if `inner_iterations` allows the regression to actually converge, or if phases are truncating early. | Log continuously; do not rely solely on phase averages. |
+| **Gradient Norm** (Pre-clip) | Indicates if gradient clipping is necessary/active and flags numerical instability at high $\epsilon$ or in high dimensions. | Track before `clip_grad_norm_` is applied. |
+| **Effective Learning Rate** | Sanity check to ensure your cosine decay schedule is functioning as intended within each phase. |  |
+| **Cache Staleness** | Detects model drift. If regression loss visibly jumps at cache boundaries, `refresh_every` is too large. | Log the loss immediately before and after cache regeneration. |
 
 ## 2. Outer-Loop (IPF) Convergence
 
@@ -27,9 +19,7 @@ Those will be implemented on IPF first and on the other solvers later on.
 
 | Metric | Signal / Purpose | Implementation Notes |
 | --- | --- | --- |
-| **Marginal-Matching Distance** | Should decrease and plateau over $n$. Oscillations or non-monotonic curves indicate bad hyperparameters (LR, cache size, mean-matching). | Use MMD for 2D/low-D, FID for images. Evaluate after *every* IPF iteration.
-
- |
+| **Marginal-Matching Distance** | Should decrease and plateau over $n$. Oscillations or non-monotonic curves indicate bad hyperparameters (LR, cache size, mean-matching). | Use MMD for 2D/low-D, FID for images. Evaluate after *every* IPF iteration.|
 | **Path Self-Consistency** | Probes the alignment of the forward and backward chains. | Evaluate forward/backward consistency at 3–5 points across $t \in [0,1]$. |
 | **Parameter Drift** | Direct proxy for "has the fixed point been reached." Dictates the actual number of IPF iterations required for a given solver. | Track $\Vert{}f\_model_n - f\_model_{n-1}\Vert{}$ on the outputs of a fixed probe batch. |
 
