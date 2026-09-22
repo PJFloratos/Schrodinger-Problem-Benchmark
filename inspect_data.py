@@ -1,52 +1,70 @@
-from src.dataset.Toy2DDataset import Toy2DDataset
-from src.dataset.MNISTDataset import MNISTDataset
+from src.utils.data import get_dataset
+from src.configs import BaseConfig, Toy2dConfig, MNISTConfig
 
-from torchvision.utils import make_grid
 from torch.utils.data import DataLoader
+from torchvision.utils import make_grid
 
-import matplotlib.pyplot as plt
 import os
+import matplotlib.pyplot as plt
+from enum import Enum
 
 
-def inspect_toy2d(type="swiss_roll", n_samples=5000):
-    # Instantiate the dataset to pull the raw scaled points
-    dataset = Toy2DDataset(n_samples=n_samples, dataset_type=type)
-    points = dataset.data.numpy()
-
-    # Plot the ground truth distribution
-    plt.figure(figsize=(6, 6))
-    plt.scatter(points[:, 0], points[:, 1], s=2, alpha=0.8, color="darkorange")
-    plt.title("Ground Truth Distribution: Two Moons")
-
-    os.makedirs("./plots", exist_ok=True)
-    plt.savefig("./plots/SwissRoll/ground_truth_dataset.png")
-    print("Dataset plot saved to ./plots/SwissRoll/ground_truth_dataset.png")
+class DatasetType(str, Enum):
+    TOY2D = "toy2d"
+    MNIST = "mnist"
 
 
-def inspect_mnist():
-    # Instantiate the dataset
-    dataset = MNISTDataset(data_dir="./data", train=True)
+# Pick the dataset to inspect
+ACTIVE_DATASET = DatasetType.TOY2D
 
-    # Use a DataLoader to easily grab a random batch of 64 images
-    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
-    images = next(iter(dataloader))
 
-    # The dataset standardizes images to [-1, 1]. Rescale back to [0, 1] for plotting.
-    images = (images + 1) / 2.0
+def inspect_dataset(cfg: BaseConfig) -> None:
+    # cfg.plots_path includes the model_type (e.g., ./plots/Moons/sde).
+    # We step up one directory to save ground truth at the dataset root (e.g., ./plots/Moons).
+    base_plot_dir = os.path.dirname(cfg.plots_path)
+    os.makedirs(base_plot_dir, exist_ok=True)
+    save_path = os.path.join(base_plot_dir, "ground_truth_dataset.png")
 
-    # Create an 8x8 grid of images and permute dimensions for matplotlib (H, W, C)
-    grid = make_grid(images, nrow=8).permute(1, 2, 0).numpy()
+    # Load data
+    _, dataset = get_dataset(cfg)
 
-    # Plot the ground truth image grid
-    plt.figure(figsize=(8, 8))
-    plt.imshow(grid)
-    plt.axis("off")
-    plt.title("Ground Truth Distribution: MNIST")
+    if isinstance(cfg, Toy2dConfig):
+        # Extract the raw standardized points
+        points = dataset.data.numpy()
 
-    os.makedirs("./plots/MNIST", exist_ok=True)
-    plt.savefig("./plots/MNIST/ground_truth_dataset.png", bbox_inches="tight")
-    print("Dataset plot saved to ./plots/MNIST/ground_truth_dataset.png")
+        plt.figure(figsize=(6, 6))
+        plt.scatter(points[:, 0], points[:, 1], s=2, alpha=0.8, color="darkorange")
+        plt.title(f"Ground Truth Distribution: {cfg.dataset_name}")
+
+        plt.savefig(save_path)
+        plt.close()
+
+    elif isinstance(cfg, MNISTConfig):
+        # Use a DataLoader to grab a random batch of 64 images
+        dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
+        images = next(iter(dataloader))
+
+        # Re-normalize from [-1, 1] to [0, 1] for plotting
+        images = (images + 1) / 2.0
+
+        # Create an 8x8 grid and permute for matplotlib (H, W, C)
+        grid = make_grid(images, nrow=8).permute(1, 2, 0).numpy()
+
+        plt.figure(figsize=(8, 8))
+        plt.imshow(grid)
+        plt.axis("off")
+        plt.title(f"Ground Truth Distribution: {cfg.dataset_name}")
+
+        plt.savefig(save_path, bbox_inches="tight")
+        plt.close()
+
+    else:
+        raise ValueError("Unsupported configuration type.")
+
+    print(f"Dataset plot successfully saved to {save_path}")
 
 
 if __name__ == "__main__":
-    inspect_mnist()
+    config = Toy2dConfig() if ACTIVE_DATASET == DatasetType.TOY2D else MNISTConfig()
+
+    inspect_dataset(config)

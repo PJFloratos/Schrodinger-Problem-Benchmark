@@ -104,13 +104,13 @@ class Trainer:
                 x_0 = torch.randn_like(z_batch)
 
                 # Minibatch Optimal Transport (Optional for standard FM, but highly recommended)
-                # cost_matrix = torch.cdist(x_0, z_batch, p=2).pow(2)
-                # cost_matrix = torch.cdist(
-                #     x_0.view(B, -1), z_batch.view(B, -1), p=2
-                # ).pow(2)
-                # row_ind, col_ind = linear_sum_assignment(cost_matrix.cpu().numpy())
-                # x_0 = x_0[row_ind]
-                # z_batch = z_batch[col_ind]
+                cost_matrix = torch.cdist(x_0, z_batch, p=2).pow(2)
+                cost_matrix = torch.cdist(
+                    x_0.view(B, -1), z_batch.view(B, -1), p=2
+                ).pow(2)
+                row_ind, col_ind = linear_sum_assignment(cost_matrix.cpu().numpy())
+                x_0 = x_0[row_ind]
+                z_batch = z_batch[col_ind]
 
                 # Construct Flow Matching deterministic path
                 x_t = t_expand * z_batch + (1.0 - t_expand) * x_0
@@ -121,8 +121,13 @@ class Trainer:
             # Forward pass (predict velocity)
             pred_u = self.model(x_t, t)
 
-            # Calculate Time-Weighted CGM Loss
-            loss = torch.mean((1.0 - t_expand) * (pred_u - target_u) ** 2)
+            # Calculate Loss based on model dynamics
+            if self.model.model_type in ["sde", "minibatch"]:
+                # Time-Weighted CGM Loss to prevent explosion near t=1
+                loss = torch.mean((1.0 - t_expand) * (pred_u - target_u) ** 2)
+            else:
+                # Standard MSE for Flow Matching (constant velocity)
+                loss = torch.mean((pred_u - target_u) ** 2)
 
             batch_loss += loss.item()
 
@@ -196,6 +201,12 @@ class Trainer:
             Trainer.logger.info(("-" * 100))
 
         Trainer.logger.info("Training Process Completed Successfully.")
+
+        # Save model after training
+        save_model(
+            self.model,
+            f"{save_path}/{self.model.__class__.__name__}_checkpoint_{epoch}.pth",
+        )
 
         return {
             "train_loss": train_losses,

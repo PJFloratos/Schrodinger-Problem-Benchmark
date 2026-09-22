@@ -2,8 +2,9 @@ from src.utils.log import configure_logger
 
 import torch
 from torch import nn
-from pathlib import Path
+
 from os import remove
+from pathlib import Path
 
 
 # Get the logger for this module
@@ -11,7 +12,7 @@ logger = configure_logger(__name__)
 
 
 def save_model(model: torch.nn.Module, path: str, stops=False) -> None:
-    '''
+    """
     Save a PyTorch model to a specified path.
 
     Args:
@@ -24,14 +25,14 @@ def save_model(model: torch.nn.Module, path: str, stops=False) -> None:
 
     Returns:
         None
-    '''
-    target_path = Path('/'.join(path.split('/')[:-1]))
-    model_name = path.split('/')[-1]
+    """
+    target_path = Path("/".join(path.split("/")[:-1]))
+    model_name = path.split("/")[-1]
 
     if not (model_name.endswith(".pth") or model_name.endswith(".pt")):
         logger.error("Wrong extension: Expecting `.pt` or `.pth`.")
         return
-    
+
     # Creating the directory that the model is going to be saved if not exists
     if not target_path.exists():
         target_path.mkdir(parents=True, exist_ok=True)
@@ -51,10 +52,15 @@ def save_model(model: torch.nn.Module, path: str, stops=False) -> None:
     logger.info(f"Model Successfully Saved to `{path}`.")
 
 
-def load_model(model_class: nn.Module, model_path: str, device: torch.device=torch.device('cpu'), **kargs) -> nn.Module:
-    '''
+def load_model(
+    model_class: nn.Module,
+    model_path: str,
+    device: torch.device = torch.device("cpu"),
+    **kargs,
+) -> nn.Module:
+    """
     Loads a PyTorch model from a specified file.
-    
+
     Parameters:
         model_path (str): Path to the saved model file (e.g., 'model.pth').
         model_class (nn.Module): The class of the model to be loaded.
@@ -63,19 +69,19 @@ def load_model(model_class: nn.Module, model_path: str, device: torch.device=tor
 
     Returns:
         The loaded model.
-    '''
+    """
     # Initialize the model
     model = model_class(**kargs)
 
     # Load the state dict (parameters)
     state_dict = torch.load(model_path, map_location=torch.device(device))
-    
+
     # Load the parameters into the model
     model.load_state_dict(state_dict)
-    
+
     # Set the model to evaluation mode
     model.eval()
 
-    logger.info('Model succesfully loaded.')
-    
+    logger.info("Model succesfully loaded.")
+
     return model

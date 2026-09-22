@@ -40,7 +40,24 @@ def create_flat_notebook(output_filename="colab_training.ipynb"):
             }
         )
 
-    # 1. Force 'utils' first, starting specifically with log.py[cite: 1]
+    # 0. Force 'configs' first, starting specifically with base_config.py
+    utils_dir = os.path.join("src", "configs")
+    if os.path.exists(utils_dir):
+        # Add logger first
+        log_path = os.path.join(utils_dir, "base_config.py")
+        if os.path.exists(log_path):
+            add_cell(log_path, "Configs: Base")
+
+        # Add remaining utils
+        for file in sorted(os.listdir(utils_dir)):
+            if (
+                file.endswith(".py")
+                and file != "base_config.py"
+                and not file.startswith("__")
+            ):
+                add_cell(os.path.join(utils_dir, file), f"Config: {file}")
+
+    # 1. Force 'utils' first, starting specifically with log.py
     utils_dir = os.path.join("src", "utils")
     if os.path.exists(utils_dir):
         # Add logger first
@@ -55,7 +72,7 @@ def create_flat_notebook(output_filename="colab_training.ipynb"):
 
     # 2. Iterate through the rest of the src/ modules[cite: 1]
     # Defining an order that typically helps with dependencies when flattened
-    module_folders = ["dataset", "models", "evaluation", "training"]
+    module_folders = ["datasets", "models", "metrics", "training"]
 
     for folder in module_folders:
         folder_path = os.path.join("src", folder)

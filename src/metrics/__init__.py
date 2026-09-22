@@ -1,1 +1,1 @@
-from src.metrics.Evaluator import Evaluator
+from src.metrics.evaluator import Evaluator

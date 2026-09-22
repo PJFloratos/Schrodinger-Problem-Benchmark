@@ -1,4 +1,4 @@
-from src.utils.log import configure_logger
+from src.utils import configure_logger
 
 import torch
 from torch.utils.data import Dataset

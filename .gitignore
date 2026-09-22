@@ -15,3 +15,12 @@ __pycache__/
 # OS Specific
 .DS_Store
 Thumbs.db
+
+# Log file
+app.log
+
+# Results from the scripts
+logs/
+models/
+data/
+colab_training.ipynb
