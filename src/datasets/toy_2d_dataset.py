@@ -7,6 +7,7 @@ import numpy as np
 from sklearn.datasets import make_moons, make_swiss_roll
 from sklearn.preprocessing import StandardScaler
 
+import math
 from typing import List, Tuple, Union, Iterable
 
 
@@ -37,13 +38,21 @@ class Toy2DDataset(Dataset):
             mask = (np.floor(x1) % 2 + np.floor(x2) % 2) % 2 == 0
             X = np.vstack([x1[mask], x2[mask]]).T[:n_samples]
 
+        elif dataset_type == "gaussian":
+            self.mu = torch.tensor([5.0, 5.0], dtype=torch.float32)
+            X = torch.randn(self.n_samples, 2) * math.sqrt(2) + self.mu
+
         else:
             raise ValueError(f"Unknown dataset type: {dataset_type}")
 
-        # Standardize the data so it roughly aligns with the N(0, I) prior
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        self.data = torch.tensor(X_scaled, dtype=torch.float32)
+        if dataset_type == "gaussian":
+            # Skip scaling to preserve the exact analytical distribution
+            self.data = torch.tensor(X, dtype=torch.float32)
+        else:
+            # Standardize the data so it roughly aligns with the N(0, I) prior
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+            self.data = torch.tensor(X_scaled, dtype=torch.float32)
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.data[index]

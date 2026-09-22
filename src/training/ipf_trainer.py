@@ -277,3 +277,7 @@ class IPFTrainer:
                 self.b_model,
                 f"{save_path}/{self.b_model.__class__.__name__}_backward_final.pth",
             )
+            save_model(
+                self.f_model,
+                f"{save_path}/{self.b_model.__class__.__name__}_forward_final.pth",
+            )
