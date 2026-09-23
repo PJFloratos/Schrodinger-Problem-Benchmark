@@ -14,17 +14,6 @@ logger = text_logger(__name__)
 def save_model(model: torch.nn.Module, path: str, stops=False) -> None:
     """
     Save a PyTorch model to a specified path.
-
-    Args:
-        model (torch.Module): The PyTorch model to be saved.
-        path (str): The path where the model will be saved.
-        stops (bool, optional): If True, stops the function execution if the model file already exists at the given path. Defaults to False.
-
-    Raises:
-        AssertionError: If the file extension of the specified path is not `.pt` or `.pth`.
-
-    Returns:
-        None
     """
     target_path = Path("/".join(path.split("/")[:-1]))
     model_name = path.split("/")[-1]
@@ -49,7 +38,7 @@ def save_model(model: torch.nn.Module, path: str, stops=False) -> None:
     logger.info(f"Saving Model `{model_name}` to `{target_path}`.")
     torch.save(obj=model.state_dict(), f=path)
 
-    logger.info(f"Model Successfully Saved to `{path}`.")
+    logger.debug(f"Model Successfully Saved to `{path}`.")
 
 
 def load_model(
@@ -60,15 +49,6 @@ def load_model(
 ) -> nn.Module:
     """
     Loads a PyTorch model from a specified file.
-
-    Parameters:
-        model_path (str): Path to the saved model file (e.g., 'model.pth').
-        model_class (nn.Module): The class of the model to be loaded.
-        device (torch.device): The device that the model will be load on. Default is CPU.
-        **kwargs: Additional arguments required to initialize the model class.
-
-    Returns:
-        The loaded model.
     """
     # Initialize the model
     model = model_class(**kargs)
@@ -82,6 +62,6 @@ def load_model(
     # Set the model to evaluation mode
     model.eval()
 
-    logger.info("Model succesfully loaded.")
+    logger.debug("Model succesfully loaded.")
 
     return model

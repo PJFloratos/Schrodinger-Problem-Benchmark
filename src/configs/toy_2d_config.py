@@ -7,7 +7,7 @@ from dataclasses import dataclass
 class Toy2dConfig(BaseConfig):
     """Parameters specific to the Toy2D dataset."""
 
-    dataset_name: str = "Swiss_roll"  # Triggers the path update in __post_init__
+    dataset_name: str = "SwissRoll"  # Triggers the path update in __post_init__
     dataset_type: str = "swiss_roll"  # in [swiss_roll, moons, checkerboard, gaussian]
 
     # Data sizes

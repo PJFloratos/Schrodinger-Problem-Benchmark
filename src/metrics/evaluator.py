@@ -47,7 +47,7 @@ class Evaluator:
         backward_model: nn.Module = None,
         num_samples: int = None,  # To overwrite the global one
     ) -> Dict[str, float]:
-        Evaluator.logger.info("Starting Evaluation Process...")
+        Evaluator.logger.debug("Starting Evaluation Process...")
 
         model.eval()
         if backward_model:
@@ -61,7 +61,7 @@ class Evaluator:
         )
 
         # Eval Metrics
-        Evaluator.logger.info("Calculating Evaluation Metrics...")
+        Evaluator.logger.debug("Calculating Evaluation Metrics...")
         results = {
             "eval_loss": float(loss),
             "eval_NFEs": self.sde_steps,
@@ -77,7 +77,7 @@ class Evaluator:
             if self.ground_truth_v:
                 results["drift_MSE"] = get_drift_mse(model, self.ground_truth_v, x_gen)
 
-        Evaluator.logger.info("Evaluation Process Completed Successfully.")
+        Evaluator.logger.debug("Evaluation Process Completed Successfully.")
         return results
 
     def _compute_validation_loss(self, model: nn.Module) -> Tuple[float, torch.Tensor]:

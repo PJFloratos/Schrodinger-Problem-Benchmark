@@ -190,7 +190,7 @@ class Trainer(BaseTrainer):
         save_path: Union[str, None] = None,
         eval_callback: Optional[Callable] = None,
     ) -> Dict:
-        Trainer.logger.info("Start Training Process...")
+        Trainer.logger.debug("Start Training Process...")
 
         train_dl, valid_dl = self._get_loaders()
 
@@ -201,7 +201,7 @@ class Trainer(BaseTrainer):
         self.fixed_probe_batch = probe_batch.to(self.device)
 
         for epoch in range(1, epochs + 1):
-            Trainer.logger.info(f"-> Epoch: {epoch}/{epochs}")
+            Trainer.logger.debug(f"-> Epoch: {epoch}/{epochs}")
 
             # Training and Evaluating the Model
             phase_start = time.time()
@@ -225,7 +225,7 @@ class Trainer(BaseTrainer):
             self.track_parameter_drift(self.model, ipf_iter=epoch)
 
             Trainer.logger.info(
-                f"    Train Loss: {train_loss:.6f} | Valid Loss: {valid_loss:.6f} | "
+                f"     Epoch {epoch} | Train Loss: {train_loss:.6f} | Valid Loss: {valid_loss:.6f} | "
                 f"MMD: {metrics.get('eval_MMD', 0):.6f}"
             )
 
@@ -236,12 +236,12 @@ class Trainer(BaseTrainer):
                     f"{save_path}/{self.model.__class__.__name__}_checkpoint_{epoch}.pth",
                 )
 
-            Trainer.logger.info(("-" * 100))
+            Trainer.logger.debug(("-" * 100))
 
         # Log final hardware footprint and parameters
         self.log_compute_cost([self.model])
 
-        Trainer.logger.info("Training Process Completed Successfully.")
+        Trainer.logger.debug("Training Process Completed Successfully.")
 
         # Save model after training
         if save_path:

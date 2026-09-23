@@ -45,7 +45,7 @@ def plot_samples(
 
 def generate_and_plot(generative_model, eval_res, cfg):
     """Handles dataset-specific generation and routing to the correct plotter."""
-    logger.info("Simulating trajectories for final plot...")
+    logger.debug("Simulating trajectories for final plot...")
     generative_model.eval()
 
     if isinstance(cfg, Toy2dConfig):
@@ -98,4 +98,4 @@ def generate_and_plot(generative_model, eval_res, cfg):
             x_gen, eval_res, path=save_path, title="MNIST Generated Samples (t=1)"
         )
 
-    logger.info(f"Plots successfully saved to {save_path}.")
+    logger.debug(f"Plots successfully saved to {save_path}.")

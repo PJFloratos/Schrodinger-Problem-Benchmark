@@ -4,10 +4,15 @@ import json
 from typing import Dict, Any
 
 
-def text_logger(name=__name__, level=logging.INFO) -> logging.Logger:
+def text_logger(
+    name=__name__,
+    console_level=logging.DEBUG,
+    file_level=logging.INFO,
+    log_file="run.log",
+) -> logging.Logger:
     """Configures the text logger with console and file handlers."""
     logger = logging.getLogger(name)
-    logger.setLevel(level)
+    logger.setLevel(min(console_level, file_level))
     logger.propagate = False  # do not pass logs to the default logger
 
     # Check if the logger already has handlers to prevent adding multiple handlers
@@ -20,12 +25,11 @@ def text_logger(name=__name__, level=logging.INFO) -> logging.Logger:
 
         # Create the console handler and setting its level
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(level)
+        console_handler.setLevel(console_level)
 
         # Create the file handler and setting its level
-        log_file = "run.log"
         file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(level)
+        file_handler.setLevel(file_level)
 
         # Add the formatter to the handlers
         console_handler.setFormatter(stdout_formatter)

@@ -268,7 +268,7 @@ class IPFTrainer(BaseTrainer):
         eval_callback: Optional[callable] = None,
     ):
         for n in range(ipf_iterations):
-            IPFTrainer.logger.info(f"\n--- IPF Iteration {n+1}/{ipf_iterations} ---")
+            IPFTrainer.logger.debug(f"\n--- IPF Iteration {n+1}/{ipf_iterations} ---")
 
             # ==========================================
             # Phase 1: Train Backward Model
