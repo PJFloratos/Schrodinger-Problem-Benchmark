@@ -1,25 +1,17 @@
-from src.utils import EMAHelper, save_model
+from src.training import BaseTrainer
+from src.utils import EMAHelper, save_model, text_logger
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 import math
+import time
 from tqdm import tqdm
-from typing import Union
+from typing import Union, Any, Optional
 
 
-# def reference_drift(x: torch.Tensor) -> torch.Tensor:
-#     """Ornstein-Uhlenbeck reference process used for the very first forward pass."""
-#     return -x
-
-
-def reference_drift(x: torch.Tensor) -> torch.Tensor:
-    """Standard Brownian Motion reference process (zero drift)."""
-    return torch.zeros_like(x)
-
-
-class IPFTrainer:
+class IPFTrainer(BaseTrainer):
     """
     Iterative Proportional Fitting (Diffusion Schrodinger Bridge).
 
@@ -30,6 +22,8 @@ class IPFTrainer:
       * Backward chain: y_{i+1} = y_i + h * b(y_i, 1 - t_i) + sqrt(h) * z
     """
 
+    logger = text_logger(__name__)
+
     def __init__(
         self,
         forward_model: nn.Module,
@@ -38,16 +32,19 @@ class IPFTrainer:
         forward_opt: torch.optim.Optimizer,
         backward_opt: torch.optim.Optimizer,
         device: torch.device,
+        metric_logger: Any,
         batch_size: int = 256,
         sde_steps: int = 20,
         num_cache_batches: int = 10,  # Number of dataset batches to cache per iteration
         refresh_every: int = 500,  # regenerate the cache every N gradient steps
         mean_match: bool = True,  # DSB mean-matching target (see _simulate_and_cache)
-        grad_clip: float = 1.0,  # set to None / 0 to disable
+        grad_clip: float = 2.0,
         ema_mu: float = 0.999,
         lr_decay: bool = True,  # cosine decay inside each training phase
         lr_final_ratio: float = 0.05,  # final lr = ratio * base lr
     ):
+        super().__init__(device=device, metric_logger=metric_logger)
+
         self.f_model = forward_model.to(device)
         self.b_model = backward_model.to(device)
         self.dataset = dataset
@@ -60,7 +57,7 @@ class IPFTrainer:
         self.num_cache_batches = num_cache_batches
         self.refresh_every = refresh_every
         self.mean_match = mean_match
-        self.grad_clip = None
+        self.grad_clip = grad_clip
         self.lr_decay = lr_decay
         self.lr_final_ratio = lr_final_ratio
         self.criterion = nn.MSELoss()
@@ -71,11 +68,28 @@ class IPFTrainer:
         )
         self._data_iter = self._repeater(self.dl)
 
+        # Set the probe batch for parameter drift tracking safely
+        probe_batch = next(iter(self.dl))
+        if isinstance(probe_batch, (list, tuple)):
+            probe_batch = probe_batch[0]
+        self.fixed_probe_batch = probe_batch.to(self.device)
+
         # Initialize and register EMA trackers for both networks
         self.ema_f = EMAHelper(mu=0.999, device=self.device)
         self.ema_f.register(self.f_model)
         self.ema_b = EMAHelper(mu=0.999, device=self.device)
         self.ema_b.register(self.b_model)
+
+    ############ Reference Process
+
+    # def reference_drift(x: torch.Tensor) -> torch.Tensor:
+    #     """Ornstein-Uhlenbeck reference process used for the very first forward pass."""
+    #     return -x
+
+    @staticmethod
+    def reference_drift(x: torch.Tensor) -> torch.Tensor:
+        """Standard Brownian Motion reference process (zero drift)."""
+        return torch.zeros_like(x)
 
     ############ UTILS
 
@@ -118,7 +132,7 @@ class IPFTrainer:
             sampler.eval()
 
         def drift_fn(x, t):
-            return reference_drift(x) if use_reference else sampler(x, t)
+            return IPFTrainer.reference_drift(x) if use_reference else sampler(x, t)
 
         # Pre-allocate contiguous memory blocks (massive speedup)
         total_samples = self.num_cache_batches * self.batch_size * self.sde_steps
@@ -184,15 +198,20 @@ class IPFTrainer:
         make_cache,
         num_iter: int,
         direction: str,
+        ipf_iter: int,
     ) -> float:
         target_model.train()
         cache_iter = make_cache()
         total_loss = 0.0
         base_lrs = [g["lr"] for g in opt.param_groups]
 
-        desc = (
-            "Training Forward Model" if direction == "f" else "Training Backward Model"
-        )
+        if direction == "f":
+            phase = "forward"
+            desc = "Training Forward Model"
+        else:
+            phase = "backward"
+            desc = "Training Backward Model"
+
         for it in tqdm(range(num_iter), ascii=True, desc=desc):
             if self.lr_decay:
                 r = self.lr_final_ratio
@@ -203,12 +222,27 @@ class IPFTrainer:
             if it > 0 and self.refresh_every and it % self.refresh_every == 0:
                 cache_iter = make_cache()  # fresh trajectories, old cache is freed
 
-            x_batch, t_batch, u_batch = next(cache_iter)
+                # Check for cache staleness by pulling immediate next batch
+                x_batch, t_batch, u_batch = next(cache_iter)
+                opt.zero_grad(set_to_none=True)
+                pred_u = target_model(x_batch, t_batch)
+                fresh_loss = self.criterion(pred_u, u_batch)
+                if prev_loss is not None:
+                    self.track_cache_staleness(
+                        prev_loss.item(), fresh_loss.item(), self.total_gradient_steps
+                    )
+                loss = fresh_loss
+            else:
+                x_batch, t_batch, u_batch = next(cache_iter)
+                opt.zero_grad(set_to_none=True)
+                pred_u = target_model(x_batch, t_batch)
+                loss = self.criterion(pred_u, u_batch)
 
-            opt.zero_grad(set_to_none=True)
-            pred_u = target_model(x_batch, t_batch)
-            loss = self.criterion(pred_u, u_batch)
             loss.backward()
+
+            # --- BaseTrainer Metric Hook ---
+            self.log_inner_step(target_model, loss, opt, phase=phase, ipf_iter=ipf_iter)
+
             if self.grad_clip:
                 torch.nn.utils.clip_grad_norm_(
                     target_model.parameters(), self.grad_clip
@@ -218,6 +252,7 @@ class IPFTrainer:
             # Update EMA shadow weights immediately after every gradient step
             ema_helper.update(target_model)
             total_loss += loss.item()
+            prev_loss = loss
 
         for g, lr0 in zip(opt.param_groups, base_lrs):  # restore for the next phase
             g["lr"] = lr0
@@ -230,11 +265,15 @@ class IPFTrainer:
         inner_iterations: int = 5000,
         save_per: Union[int, None] = None,
         save_path: Union[str, None] = None,
+        eval_callback: Optional[callable] = None,
     ):
         for n in range(ipf_iterations):
-            print(f"\n--- IPF Iteration {n+1}/{ipf_iterations} ---")
+            IPFTrainer.logger.info(f"\n--- IPF Iteration {n+1}/{ipf_iterations} ---")
 
-            # Phase 1: simulate forward (f, or OU at n == 0), train backward net b
+            # ==========================================
+            # Phase 1: Train Backward Model
+            # ==========================================
+            phase_start = time.time()
             b_loss = self._train_cache(
                 self.b_model,
                 self.b_opt,
@@ -242,9 +281,30 @@ class IPFTrainer:
                 lambda: self._simulate_and_cache(self.f_model, self.ema_f, "f", n),
                 inner_iterations,
                 direction="b",
+                ipf_iter=n,
             )
+            b_time = time.time() - phase_start
 
-            # Phase 2: simulate backward (b) from the prior, train forward net f
+            # The cache builds num_cache_batches, each running sde_steps
+            train_nfes = self.num_cache_batches * self.batch_size * self.sde_steps
+            self.total_nfes += train_nfes
+
+            # Aggregate Phase 1 Metrics
+            b_metrics = {
+                "loss": b_loss,
+                "phase_time_sec": b_time,
+                "train_nfes": train_nfes,
+            }
+            if eval_callback:
+                # Trigger the evaluator purely as a callback
+                b_metrics.update(eval_callback(self.b_model, direction="b"))
+
+            self.log_phase_end("backward", n, b_metrics)
+
+            # ==========================================
+            # Phase 2: Train Forward Model
+            # ==========================================
+            phase_start = time.time()
             f_loss = self._train_cache(
                 self.f_model,
                 self.f_opt,
@@ -252,11 +312,31 @@ class IPFTrainer:
                 lambda: self._simulate_and_cache(self.b_model, self.ema_b, "b", n),
                 inner_iterations,
                 direction="f",
+                ipf_iter=n,
+            )
+            f_time = time.time() - phase_start
+            self.total_nfes += train_nfes
+
+            # Aggregate Phase 2 Metrics
+            f_metrics = {
+                "loss": f_loss,
+                "phase_time_sec": f_time,
+                "train_nfes": train_nfes,
+            }
+            if eval_callback:
+                f_metrics.update(eval_callback(self.f_model, direction="f"))
+
+            self.log_phase_end("forward", n, f_metrics)
+
+            self.logger.info(
+                f"Iteration {n+1} | "
+                f"F-Loss: {f_loss:.4f} ({f_metrics.get('eval_MMD', 0):.6f} MMD) | "
+                f"B-Loss: {b_loss:.4f} ({b_metrics.get('FID', b_metrics.get('eval_MMD', 0)):.6f} Dist)"
             )
 
-            print(
-                f"Iteration {n+1} | Forward Loss: {f_loss:.6f} | Backward Loss: {b_loss:.6f}"
-            )
+            # --- Outer-Loop Diagnostics ---
+            self.track_parameter_drift(self.b_model, ipf_iter=n)
+            self.track_path_consistency(self.f_model, self.b_model, ipf_iter=n)
 
             # --- Intermediate Checkpoint Saving ---
             if save_per and save_path and ((n + 1) % save_per == 0):
@@ -270,6 +350,9 @@ class IPFTrainer:
         # Load smoothed weights into the models used for evaluation
         self.ema_f.ema(self.f_model)
         self.ema_b.ema(self.b_model)
+
+        # Log final hardware and time footprint
+        self.log_compute_cost([self.f_model, self.b_model])
 
         # --- Final Model Saving ---
         if save_path:

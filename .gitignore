@@ -18,6 +18,7 @@ Thumbs.db
 
 # Log file
 app.log
+run.log
 
 # Results from the scripts
 logs/

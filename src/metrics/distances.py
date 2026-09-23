@@ -3,7 +3,7 @@ import torch
 import numpy as np
 from scipy.stats import wasserstein_distance
 
-from typing import Sequence, Union, Optional
+from typing import Sequence, Union, Optional, Callable, Dict
 
 
 def _as_flat_tensor(x, device: torch.device) -> torch.Tensor:
@@ -66,3 +66,67 @@ def get_mmd(
     yy = _mean_kernel(b, b, gammas, chunk)
     xy = _mean_kernel(a, b, gammas, chunk)
     return xx + yy - 2.0 * xy
+
+
+@torch.no_grad()
+def get_path_consistency_mse(
+    f_model: torch.nn.Module,
+    b_model: torch.nn.Module,
+    x_probe: torch.Tensor,
+    t_points: Sequence[float] = (0.25, 0.5, 0.75),
+) -> float:
+    """
+    Probes alignment of forward and backward chains.
+    Evaluates the squared difference between the forward drift and the reversed backward drift.
+    """
+    f_model.eval()
+    b_model.eval()
+    device = x_probe.device
+
+    total_mse = 0.0
+    for t_val in t_points:
+        t_tensor = torch.full((x_probe.shape[0], 1), t_val, device=device)
+
+        # Depending on your exact SB formulation, forward and backward drifts sum to a specific score.
+        # This acts as a base divergence metric between the two vector fields.
+        f_vec = f_model(x_probe, t_tensor)
+        b_vec = b_model(x_probe, t_tensor)
+
+        total_mse += torch.mean((f_vec + b_vec) ** 2).item()
+
+    return total_mse / len(t_points)
+
+
+@torch.no_grad()
+def get_drift_mse(
+    model: torch.nn.Module,
+    ground_truth_v: Callable,
+    x_probe: torch.Tensor,
+    t_points: Sequence[float] = (0.1, 0.5, 0.9),
+) -> float:
+    """
+    Compare against analytic v*(x,t) at multiple t-steps.
+    """
+    model.eval()
+    device = x_probe.device
+
+    total_mse = 0.0
+    for t_val in t_points:
+        t_tensor = torch.full((x_probe.shape[0], 1), t_val, device=device)
+        pred_u = model(x_probe, t_tensor)
+        true_u = ground_truth_v(x_probe, t_tensor)
+
+        total_mse += torch.mean((pred_u - true_u) ** 2).item()
+
+    return total_mse / len(t_points)
+
+
+def get_generative_quality_metrics(
+    x_true: torch.Tensor, x_gen: torch.Tensor
+) -> Dict[str, float]:
+    """
+    Standard generative metrics for standard datasets.
+    For production, wrap torchmetrics.image.fid.FrechetInceptionDistance here.
+    """
+    # Placeholder for torchmetrics integration
+    return {"FID": 0.0, "Precision": 0.0, "Recall": 0.0}

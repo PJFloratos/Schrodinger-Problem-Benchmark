@@ -1,5 +1,3 @@
-from src.utils import configure_logger
-
 import torch
 from torch.utils.data import Dataset
 
@@ -15,8 +13,6 @@ class Toy2DDataset(Dataset):
     """
     A 2D toy dataset for validating the Generator Matching solver.
     """
-
-    logger = configure_logger(__name__)
 
     def __init__(self, n_samples: int = 10000, dataset_type: str = "moons") -> None:
         super().__init__()

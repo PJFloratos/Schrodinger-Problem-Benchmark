@@ -22,18 +22,21 @@ class BaseConfig:
     # --- Training ---
     model_type: str = "ipf"  # in [sde, minibatch, flow_m, ipf]
     model_name: str = "IPF"  # in [SDE, ODE, FM, IPF]
-    epochs: int = 25
+    epochs: int = 10
     batch_size: int = 512
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
+    grad_clip: float = 2.0
     sim_steps: int = 30
     num_iter: int = 1000
+    refresh_every: int = 500
     num_cache_batches: int = 10
     save_interval: int = 500
 
     # --- Evaluation ---
     eval_sim_steps: int = 30
-    eval_gen_samples: int = 4000
+    track_gen_samples: int = 512  # Small batch for fast mid-training tracking
+    eval_gen_samples: int = 4000  # Massive batch for final end-of-training metric
 
     def __post_init__(self):
         """Append dataset name to paths automatically to prevent overwriting."""

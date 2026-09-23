@@ -1,5 +1,5 @@
 from src.utils.save import save_model
-from src.utils.log import configure_logger
+from src.utils.log import text_logger
 
 import torch
 from torch import nn
@@ -14,7 +14,7 @@ from typing import Callable, Tuple, Dict, Union
 
 
 class Trainer:
-    logger = configure_logger(__name__)
+    logger = text_logger(__name__)
 
     def __init__(
         self,

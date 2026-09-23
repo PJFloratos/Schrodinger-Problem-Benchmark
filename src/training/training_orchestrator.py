@@ -1,20 +1,30 @@
 from src.models import VelocityMLP, SimpleUNet
 from src.training import Trainer, IPFTrainer
-from src.utils import configure_logger
+from src.utils import text_logger
 from src.configs import BaseConfig, Toy2dConfig, MNISTConfig
 
 import torch
 from torch import optim
 
+from typing import Callable, Any
+
 
 class TrainingOrchestrator:
     """Orchestrates the instantiation and training of generative methodologies."""
 
-    logger = configure_logger(__name__)
+    logger = text_logger(__name__)
 
-    def __init__(self, cfg: BaseConfig, dataset: torch.utils.data.Dataset):
+    def __init__(
+        self,
+        cfg: BaseConfig,
+        dataset: torch.utils.data.Dataset,
+        eval_callback: Callable,
+        metric_logger: Any,
+    ):
         self.cfg = cfg
         self.dataset = dataset
+        self.eval_callback = eval_callback
+        self.metric_logger = metric_logger
 
     def build_and_train(self) -> torch.nn.Module:
         """Routes to the correct training methodology and returns the generative model."""
@@ -60,9 +70,12 @@ class TrainingOrchestrator:
             forward_opt=f_opt,
             backward_opt=b_opt,
             device=self.cfg.device,
+            metric_logger=self.metric_logger,
             batch_size=self.cfg.batch_size,
             sde_steps=self.cfg.sim_steps,
             num_cache_batches=self.cfg.num_cache_batches,
+            grad_clip=self.cfg.grad_clip,
+            refresh_every=self.cfg.refresh_every,
         )
 
         trainer.fit(
@@ -70,6 +83,7 @@ class TrainingOrchestrator:
             inner_iterations=self.cfg.num_iter,
             save_per=self.cfg.save_interval,
             save_path=self.cfg.models_path,
+            eval_callback=self.eval_callback,
         )
 
         return b_model

@@ -1,4 +1,4 @@
-from src.utils.log import configure_logger
+from src.utils.log import text_logger
 
 import torch
 from torch import nn
@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 # Get the logger for this module
-logger = configure_logger(__name__)
+logger = text_logger(__name__)
 
 
 def save_model(model: torch.nn.Module, path: str, stops=False) -> None:

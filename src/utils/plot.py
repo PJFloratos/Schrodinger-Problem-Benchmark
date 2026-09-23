@@ -1,4 +1,4 @@
-from src.utils import configure_logger
+from src.utils import text_logger
 from src.configs import Toy2dConfig, MNISTConfig
 
 import torch
@@ -10,7 +10,7 @@ import os
 from typing import Dict
 
 
-logger = configure_logger(__name__)
+logger = text_logger(__name__)
 
 
 def plot_samples(
@@ -58,7 +58,7 @@ def generate_and_plot(generative_model, eval_res, cfg):
         plt.scatter(x_np[:, 0], x_np[:, 1], s=2, alpha=0.5, color="blue")
         plt.title("Generated Distribution (t=1)")
 
-        metrics_text = f"CGM Loss: {eval_res.get('CGM_Loss', 0):.4f}\nMMD: {eval_res.get('MMD', 0):.6f}\n"
+        metrics_text = f"Loss: {eval_res.get('eval_loss', 0):.4f}\nMMD: {eval_res.get('eval_MMD', 0):.6f}\n"
         plt.text(
             0.95,
             0.95,
@@ -72,7 +72,7 @@ def generate_and_plot(generative_model, eval_res, cfg):
 
         if cfg.model_type == "ipf":
             save_path = os.path.join(
-                cfg.plots_path, f"{cfg.epochs}ep_{cfg.sim_steps}ss_{cfg.num_iter}.png"
+                cfg.plots_path, f"{cfg.epochs}ep_{cfg.sim_steps}ss_{cfg.num_iter}it.png"
             )
         else:
             save_path = os.path.join(
