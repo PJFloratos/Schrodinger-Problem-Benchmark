@@ -1,3 +1,4 @@
+from src.training import BaseTrainer
 from src.utils.save import save_model
 from src.utils.log import text_logger
 
@@ -8,12 +9,13 @@ from torch.utils.data import Dataset, DataLoader, random_split
 from scipy.optimize import linear_sum_assignment
 
 import os
+import time
 from tqdm import tqdm
 from timeit import default_timer as timer
-from typing import Callable, Tuple, Dict, Union
+from typing import Callable, Tuple, Dict, Union, Any, Optional
 
 
-class Trainer:
+class Trainer(BaseTrainer):
     logger = text_logger(__name__)
 
     def __init__(
@@ -22,14 +24,19 @@ class Trainer:
         dataset: Dataset,
         batch_size: int,
         opt: torch.optim.Optimizer,
+        metric_logger: Any,
         train_prop: float = 0.8,
+        grad_clip: Optional[float] = 1.0,
         device: torch.device = torch.device("cpu"),
     ) -> None:
+        super().__init__(device=device, metric_logger=metric_logger)
+
         self.model = model.to(device, non_blocking=True)
         self.dataset = dataset
         self.batch_size = batch_size
         self.opt = opt
         self.train_prop = train_prop
+        self.grad_clip = grad_clip
         self.device = device
 
     def _get_loaders(self) -> Tuple[DataLoader, DataLoader]:
@@ -48,10 +55,15 @@ class Trainer:
 
         return train_dl, valid_dl
 
-    def _process_data_loaders(self, dl: DataLoader) -> Tuple[float, float]:
+    def _process_data_loaders(self, dl: DataLoader, epoch: int) -> Tuple[float, float]:
         # Initialize batch loss and accuracy
-        batch_loss, batch_eval = 0.0, 0.0
-        phase = "Training Step" if self.model.training else "Validation Step"
+        batch_loss = 0.0
+        if self.model.training:
+            desc = "Training Step"
+            phase = "train"
+        else:
+            desc = "Validation Step"
+            phase = "valid"
 
         for z_batch in tqdm(dl, ascii=True, desc=f"             {phase}"):
             z_batch = z_batch.to(self.device, non_blocking=True)
@@ -71,7 +83,6 @@ class Trainer:
 
                 # Calculate the squared Euclidean cost matrix between prior and data
                 # CPU Bottleneck Warning: This takes O(N^3) time.
-                # cost_matrix = torch.cdist(x_0, z_batch, p=2).pow(2)
                 cost_matrix = torch.cdist(
                     x_0.view(B, -1), z_batch.view(B, -1), p=2
                 ).pow(2)
@@ -131,65 +142,92 @@ class Trainer:
 
             batch_loss += loss.item()
 
-            # Dummy eval since accuracy doesn't apply to vector fields
-            batch_eval += 0.0
-
             if self.model.training:
                 self.opt.zero_grad()
                 loss.backward()
-                # Activate gradient clipping to stabilize the t -> 1 singularity
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+
+                # --- BaseTrainer Inner Metric Hook ---
+                self.log_inner_step(
+                    model=self.model,
+                    loss=loss,
+                    optimizer=self.opt,
+                    phase=phase,
+                    ipf_iter=epoch,
+                )
+
+                if self.grad_clip:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.grad_clip
+                    )
                 self.opt.step()
 
-        return batch_loss / len(dl), batch_eval / len(dl)
+        return batch_loss / len(dl)
 
-    def _training_step(self, train_dl: DataLoader) -> Tuple[float, float]:
+    def _training_step(self, train_dl: DataLoader, epoch: int) -> Tuple[float, float]:
         """
         Performs a single training step over the training DataLoader.
         """
         self.model.train()
-        train_loss, train_eval = self._process_data_loaders(train_dl)
+        train_loss = self._process_data_loaders(train_dl, epoch)
         self.model.eval()
 
-        return train_loss, train_eval
+        return train_loss
 
-    def _validation_step(self, valid_dl: DataLoader) -> Tuple[float, float]:
+    def _validation_step(self, valid_dl: DataLoader, epoch: int) -> Tuple[float, float]:
         """
         Performs a single validation step over the validation DataLoader.
         """
         self.model.eval()
         with torch.inference_mode():
-            valid_loss, valid_eval = self._process_data_loaders(valid_dl)
+            valid_loss = self._process_data_loaders(valid_dl, epoch)
 
-        return valid_loss, valid_eval
+        return valid_loss
 
     def fit(
         self,
         epochs: int,
         save_per: Union[int, None] = None,
         save_path: Union[str, None] = None,
+        eval_callback: Optional[Callable] = None,
     ) -> Dict:
-        start_time = timer()
-        train_losses, train_evals = [], []
-        valid_losses, valid_evals = [], []
-
         Trainer.logger.info("Start Training Process...")
 
         train_dl, valid_dl = self._get_loaders()
+
+        # Set the probe batch for parameter drift tracking safely
+        probe_batch = next(iter(valid_dl))
+        if isinstance(probe_batch, (list, tuple)):
+            probe_batch = probe_batch[0]
+        self.fixed_probe_batch = probe_batch.to(self.device)
 
         for epoch in range(1, epochs + 1):
             Trainer.logger.info(f"-> Epoch: {epoch}/{epochs}")
 
             # Training and Evaluating the Model
-            train_loss, train_eval = self._training_step(train_dl)
-            valid_loss, valid_eval = self._validation_step(valid_dl)
+            phase_start = time.time()
+            train_loss = self._training_step(train_dl, epoch)
+            valid_loss = self._validation_step(valid_dl, epoch)
+            phase_time = time.time() - phase_start
+
+            # Aggregate Outer-Loop Epoch Metrics
+            metrics = {
+                "train_loss": train_loss,
+                "valid_loss": valid_loss,
+                "phase_time_sec": phase_time,
+            }
+
+            if eval_callback:
+                # 'b' direction used traditionally for generative path evaluation
+                metrics.update(eval_callback(self.model, direction="b"))
+
+            # --- BaseTrainer Outer Metric Hooks ---
+            self.log_phase_end("epoch", epoch, metrics)
+            self.track_parameter_drift(self.model, ipf_iter=epoch)
 
             Trainer.logger.info(
-                f"    Train Loss: {train_loss:.4f} | Valid Loss: {valid_loss:.4f}"
+                f"    Train Loss: {train_loss:.6f} | Valid Loss: {valid_loss:.6f} | "
+                f"MMD: {metrics.get('eval_MMD', 0):.6f}"
             )
-
-            train_losses.append(train_loss)
-            valid_losses.append(valid_loss)
 
             # Saving the model
             if save_per and save_path and (epoch % save_per == 0):
@@ -200,16 +238,14 @@ class Trainer:
 
             Trainer.logger.info(("-" * 100))
 
+        # Log final hardware footprint and parameters
+        self.log_compute_cost([self.model])
+
         Trainer.logger.info("Training Process Completed Successfully.")
 
         # Save model after training
-        save_model(
-            self.model,
-            f"{save_path}/{self.model.__class__.__name__}_checkpoint_{epoch}.pth",
-        )
-
-        return {
-            "train_loss": train_losses,
-            "valid_loss": valid_losses,
-            "total_time": timer() - start_time,
-        }
+        if save_path:
+            save_model(
+                self.model,
+                f"{save_path}/{self.model.__class__.__name__}_checkpoint_{epoch}.pth",
+            )

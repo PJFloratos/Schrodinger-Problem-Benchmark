@@ -108,13 +108,16 @@ class TrainingOrchestrator:
             dataset=self.dataset,
             batch_size=self.cfg.batch_size,
             opt=opt,
+            metric_logger=self.metric_logger,
             device=self.cfg.device,
+            grad_clip=self.cfg.grad_clip,
         )
 
         trainer.fit(
             epochs=self.cfg.epochs,
             save_per=self.cfg.save_interval,
             save_path=self.cfg.models_path,
+            eval_callback=self.eval_callback,
         )
 
         return model
