@@ -1,4 +1,6 @@
 # https://github.com/JTT94/diffusion_schrodinger_bridge/
+# https://github.com/yuyang-shi/dsbm-pytorch
+
 
 from src.training import TrainingOrchestrator
 from src.metrics import Evaluator

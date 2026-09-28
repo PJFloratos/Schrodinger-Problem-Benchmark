@@ -70,7 +70,7 @@ def generate_and_plot(generative_model, eval_res, cfg):
             bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
         )
 
-        if cfg.model_type == "ipf":
+        if cfg.model_type in ["ipf", "imf"]:
             save_path = os.path.join(
                 cfg.plots_path, f"{cfg.epochs}ep_{cfg.sim_steps}ss_{cfg.num_iter}it.png"
             )

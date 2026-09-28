@@ -37,7 +37,6 @@ class IPFTrainer(BaseTrainer):
         sde_steps: int = 20,
         num_cache_batches: int = 10,  # Number of dataset batches to cache per iteration
         refresh_every: int = 500,  # regenerate the cache every N gradient steps
-        mean_match: bool = True,  # DSB mean-matching target (see _simulate_and_cache)
         grad_clip: float = 2.0,
         ema_mu: float = 0.999,
         lr_decay: bool = True,  # cosine decay inside each training phase
@@ -56,7 +55,6 @@ class IPFTrainer(BaseTrainer):
         self.h = 1.0 / sde_steps
         self.num_cache_batches = num_cache_batches
         self.refresh_every = refresh_every
-        self.mean_match = mean_match
         self.grad_clip = grad_clip
         self.lr_decay = lr_decay
         self.lr_final_ratio = lr_final_ratio
@@ -165,19 +163,25 @@ class IPFTrainer(BaseTrainer):
                     (b_size, 1), 1.0 - (i + 1) * self.h, device=self.device
                 )
 
-                drift = drift_fn(x, t_now)
-                x_next = x + self.h * drift + math.sqrt(self.h) * torch.randn_like(x)
+                # drift = drift_fn(x, t_now)
+                # x_next = x + self.h * drift + math.sqrt(self.h) * torch.randn_like(x)
 
-                if self.mean_match:
-                    # DSB mean matching: F(x_k) - F(x_{k+1}) with F(x) = x + h * drift(x, t_k).
-                    # Both evaluations use the same time index t_k (as in the official code).
-                    drift_next = drift_fn(x_next, t_now)
-                    target = (
-                        (x + self.h * drift) - (x_next + self.h * drift_next)
-                    ) / self.h
-                else:
-                    # Plain reverse-increment regression
-                    target = (x - x_next) / self.h
+                # if self.mean_match:
+                #     # DSB mean matching: F(x_k) - F(x_{k+1}) with F(x) = x + h * drift(x, t_k).
+                #     # Both evaluations use the same time index t_k (as in the official code).
+                #     drift_next = drift_fn(x_next, t_now)
+                #     target = (
+                #         (x + self.h * drift) - (x_next + self.h * drift_next)
+                #     ) / self.h
+                # else:
+                #     # Plain reverse-increment regression
+                #     target = (x - x_next) / self.h
+
+                drift = drift_fn(x, t_now)
+                z = torch.randn_like(x)
+                x_next = x + self.h * drift + math.sqrt(self.h) * z
+                drift_next = drift_fn(x_next, t_now)
+                target = -drift_next - z / math.sqrt(self.h)
 
                 # The trained network is queried at x_{k+1}, at the forward time of x_{k+1}.
                 X_cache[idx : idx + b_size] = x_next
@@ -231,12 +235,14 @@ class IPFTrainer(BaseTrainer):
                     self.track_cache_staleness(
                         prev_loss.item(), fresh_loss.item(), self.total_gradient_steps
                     )
-                loss = fresh_loss
+                # loss = fresh_loss
+                loss = self.h * fresh_loss
             else:
                 x_batch, t_batch, u_batch = next(cache_iter)
                 opt.zero_grad(set_to_none=True)
                 pred_u = target_model(x_batch, t_batch)
-                loss = self.criterion(pred_u, u_batch)
+                # loss = self.criterion(pred_u, u_batch)
+                loss = self.h * self.criterion(pred_u, u_batch)  # Apply h scaling
 
             loss.backward()
 
