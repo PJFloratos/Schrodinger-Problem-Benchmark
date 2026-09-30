@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader
 
 import math
 import time
+import copy
 from tqdm import tqdm
 from typing import Any, Callable, Optional, Tuple, Union
 
@@ -45,12 +46,13 @@ class IMFTrainer(BaseTrainer):
         num_cache_batches: int = 10,  # cache holds num_cache_batches * batch_size PAIRS
         refresh_every: int = 500,  # regenerate the pairs every N gradient steps
         sigma: float = 1.0,  # Brownian reference volatility (IPF is hard-wired to 1)
-        eps: float = 1e-3,  # t ~ U[eps, 1 - eps]; targets blow up like 1/t at the ends
-        first_coupling: str = "ind",  # in ["ind", "ref"]
+        eps: float = 1e-4,  # t ~ U[eps, 1 - eps]; targets blow up like 1/t at the ends
+        first_coupling: str = "ref",  # in ["ind", "ref"]
         grad_clip: float = 2.0,
         ema_mu: float = 0.999,
         lr_decay: bool = True,  # cosine decay inside each training phase
         lr_final_ratio: float = 0.05,  # final lr = ratio * base lr
+        use_amp: bool = True,
     ):
         super().__init__(device=device, metric_logger=metric_logger)
 
@@ -59,8 +61,6 @@ class IMFTrainer(BaseTrainer):
                 f"first_coupling must be 'ind' or 'ref', got {first_coupling!r}"
             )
 
-        self.f_model = forward_model.to(device)
-        self.b_model = backward_model.to(device)
         self.dataset = dataset
         self.f_opt = forward_opt
         self.b_opt = backward_opt
@@ -78,10 +78,35 @@ class IMFTrainer(BaseTrainer):
         self.lr_final_ratio = lr_final_ratio
         self.data_shape = tuple(self.dataset[0].shape)
 
-        # generate() reads model.sigma so that evaluation uses the same noise level as training
-        self.f_model.sigma = sigma
-        self.b_model.sigma = sigma
+        # -------------------------------------------------------------
+        # 1. Global channels_last & Hardware Settings
+        # -------------------------------------------------------------
+        is_image = len(self.data_shape) == 3  # (C, H, W)
+        self.memory_format = (
+            torch.channels_last
+            if (self.device.type == "cuda" and is_image)
+            else torch.contiguous_format
+        )
 
+        if self.device.type == "cuda" and is_image:
+            torch.backends.cudnn.benchmark = True
+
+        # -------------------------------------------------------------
+        # 2. Precision & Compilation Settings
+        # ------------------------------------------------------------
+        self.use_amp = use_amp and (self.device.type == "cuda")
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        self.amp_dtype = torch.float16 if self.device.type == "cuda" else torch.bfloat16
+
+        self.use_compile = self.device.type == "cuda"
+        if self.use_compile:
+            self._fused_bridge_calc = torch.compile(self._bridge_kernel, mode="default")
+        else:
+            self._fused_bridge_calc = self._bridge_kernel
+
+        # -------------------------------------------------------------
+        # 3. Data Pipeline & Probe Batch
+        # -------------------------------------------------------------
         self.dl = DataLoader(
             self.dataset, batch_size=self.batch_size, shuffle=True, drop_last=True
         )
@@ -93,10 +118,37 @@ class IMFTrainer(BaseTrainer):
             probe_batch = probe_batch[0]
         self.fixed_probe_batch = probe_batch.to(self.device)
 
+        # -------------------------------------------------------------
+        # 4. Models, EMA, and Compilation
+        # -------------------------------------------------------------
+        # Keep base models UNCOMPILED for EMA tracking and checkpoint saving
+        self.f_model_base = forward_model.to(device, memory_format=torch.channels_last)
+        self.b_model_base = backward_model.to(device, memory_format=torch.channels_last)
+
+        # generate() reads this, and we set it BEFORE copying so samplers get it too
+        self.f_model_base.sigma = sigma
+        self.b_model_base.sigma = sigma
+
+        # Register EMA on the base models
         self.ema_f = EMAHelper(mu=ema_mu, device=self.device)
-        self.ema_f.register(self.f_model)
+        self.ema_f.register(self.f_model_base)
         self.ema_b = EMAHelper(mu=ema_mu, device=self.device)
-        self.ema_b.register(self.b_model)
+        self.ema_b.register(self.b_model_base)
+
+        # Create persistent samplers for cache generation
+        self.f_sampler = copy.deepcopy(self.f_model_base)
+        self.b_sampler = copy.deepcopy(self.b_model_base)
+
+        if self.use_compile:
+            # "reduce-overhead" uses CUDA graphs, which gives a massive speedup
+            # for the SDE simulation loop.
+            self.f_model = torch.compile(self.f_model_base, mode="reduce-overhead")
+            self.b_model = torch.compile(self.b_model_base, mode="reduce-overhead")
+            self.f_sampler = torch.compile(self.f_sampler, mode="reduce-overhead")
+            self.b_sampler = torch.compile(self.b_sampler, mode="reduce-overhead")
+        else:
+            self.f_model = self.f_model_base
+            self.b_model = self.b_model_base
 
     ############ UTILS
 
@@ -111,7 +163,9 @@ class IMFTrainer(BaseTrainer):
         batch = next(self._data_iter)
         if isinstance(batch, (list, tuple)):
             batch = batch[0]
-        return batch.to(self.device)
+        return batch.to(
+            self.device, memory_format=self.memory_format, non_blocking=True
+        )
 
     ############ COUPLING GENERATION
 
@@ -124,9 +178,18 @@ class IMFTrainer(BaseTrainer):
         """
         for i in range(self.sde_steps):
             t = torch.full((x.shape[0], 1), i * self.h, device=self.device)
+
+            if hasattr(torch.compiler, "cudagraph_mark_step_begin"):
+                torch.compiler.cudagraph_mark_step_begin()
+
+            with torch.autocast(
+                device_type=self.device.type, dtype=self.amp_dtype, enabled=self.use_amp
+            ):
+                drift = sampler(x, t)
+
             x = (
                 x
-                + self.h * sampler(x, t)
+                + self.h * drift
                 + self.sigma * math.sqrt(self.h) * torch.randn_like(x)
             )
         self.total_nfes += x.shape[0] * self.sde_steps
@@ -144,15 +207,39 @@ class IMFTrainer(BaseTrainer):
         use_first = imf_iter == 0 and (phase == "b" or self.first_coupling == "ind")
 
         if not use_first:
-            src_model, src_ema = (
-                (self.f_model, self.ema_f)
+            # Grab the uncompiled base, the EMA, and our persistent compiled sampler
+            src_base, src_ema, sampler = (
+                (self.f_model_base, self.ema_f, self.f_sampler)
                 if phase == "b"
-                else (self.b_model, self.ema_b)
+                else (self.b_model_base, self.ema_b, self.b_sampler)
             )
-            sampler = src_ema.ema_copy(src_model)
+
+            # Extract the smoothed EMA weights via the base model
+            temp_model = src_ema.ema_copy(src_base)
+
+            # Inject weights safely into the compiled sampler
+            if hasattr(sampler, "_orig_mod"):
+                sampler._orig_mod.load_state_dict(temp_model.state_dict())
+            else:
+                sampler.load_state_dict(temp_model.state_dict())
+
             sampler.eval()
 
-        X0, X1 = [], []
+        # Pre-allocate contiguous memory blocks on the GPU
+        total_samples = self.num_cache_batches * self.batch_size
+        X0_cache = torch.empty(
+            (total_samples, *self.data_shape),
+            device=self.device,
+            memory_format=torch.channels_last,
+        )
+        X1_cache = torch.empty(
+            (total_samples, *self.data_shape),
+            device=self.device,
+            memory_format=torch.channels_last,
+        )
+
+        idx = 0
+
         for _ in tqdm(
             range(self.num_cache_batches),
             ascii=True,
@@ -169,37 +256,57 @@ class IMFTrainer(BaseTrainer):
                 x0 = self._next_data()
                 x1 = self._simulate(sampler, x0)
             else:
-                x1 = torch.randn(self.batch_size, *self.data_shape, device=self.device)
+                x1 = torch.randn(
+                    self.batch_size, *self.data_shape, device=self.device
+                ).contiguous(memory_format=self.memory_format)
                 x0 = self._simulate(sampler, x1)
-            X0.append(x0)
-            X1.append(x1)
 
-        return torch.cat(X0), torch.cat(X1)
+            # Write directly into the pre-allocated tensors
+            b_size = x0.shape[0]
+            X0_cache[idx : idx + b_size] = x0
+            X1_cache[idx : idx + b_size] = x1
+            idx += b_size
+
+        # Return exact slice in case the final batch was smaller (if drop_last=False was ever used)
+        return X0_cache[:idx], X1_cache[:idx]
 
     ############ REGRESSION TARGETS
+    @staticmethod
+    def _bridge_kernel(
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        t: torch.Tensor,
+        z: torch.Tensor,
+        sigma: float,
+        is_forward: bool,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Fused kernel computing Brownian-bridge sample and regression targets.
+        Inductor will fuse all arithmetic into a single Triton pass over GPU VRAM.
+        """
+        te = t.view(x0.shape[0], *([1] * (x0.ndim - 1)))
+        x_t = (1.0 - te) * x0 + te * x1 + sigma * torch.sqrt(te * (1.0 - te)) * z
+
+        if is_forward:
+            target = (x1 - x0) - sigma * torch.sqrt(te / (1.0 - te)) * z
+            t_in = t
+            weight = 1.0 / (1.0 + (sigma**2 * te) / (1.0 - te))
+        else:
+            target = -(x1 - x0) - sigma * torch.sqrt((1.0 - te) / te) * z
+            t_in = 1.0 - t
+            weight = 1.0 / (1.0 + (sigma**2 * (1.0 - te)) / te)
+
+        return x_t, t_in, target, weight
 
     def _bridge_batch(
         self, x0: torch.Tensor, x1: torch.Tensor, phase: str
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Brownian-bridge sample. Returns (x_t, time fed to the network, regression target)."""
+        """Draws uniform time and noise, evaluating targets via the fused kernel."""
         B = x0.shape[0]
         t = torch.rand(B, 1, device=self.device) * (1.0 - 2.0 * self.eps) + self.eps
-        te = t.view(B, *([1] * (x0.ndim - 1)))  # broadcastable over (C, H, W) as well
         z = torch.randn_like(x0)
 
-        x_t = (1.0 - te) * x0 + te * x1 + self.sigma * torch.sqrt(te * (1.0 - te)) * z
-
-        if phase == "f":
-            target = (x1 - x0) - self.sigma * torch.sqrt(te / (1.0 - te)) * z
-            t_in = t
-            # Forward scaling factor
-            weight = 1.0 / (1.0 + (self.sigma**2 * te) / (1.0 - te))
-        else:
-            target = -(x1 - x0) - self.sigma * torch.sqrt((1.0 - te) / te) * z
-            t_in = 1.0 - t  # b consumes its own chain time s = 1 - t
-            # Backward scaling factor
-            weight = 1.0 / (1.0 + (self.sigma**2 * (1.0 - te)) / te)
-        return x_t, t_in, target, weight
+        return self._fused_bridge_calc(x0, x1, t, z, self.sigma, phase == "f")
 
     @torch.no_grad()
     def _probe_loss(
@@ -208,21 +315,26 @@ class IMFTrainer(BaseTrainer):
         """Low-noise loss estimate on a larger batch (used for the cache-staleness diagnostic)."""
         was_training = model.training
         model.eval()
-        n = min(4 * self.batch_size, X0.shape[0])
+        n = self.batch_size
         idx = torch.randint(0, X0.shape[0], (n,), device=self.device)
 
         x_t, t_in, target, weight = self._bridge_batch(X0[idx], X1[idx], phase)
 
-        # Use functional MSE with no reduction to apply the per-sample weighting
-        pred = model(x_t, t_in)
-        raw_loss = torch.nn.functional.mse_loss(pred, target, reduction="none")
-        loss = (raw_loss * weight).mean().item()
+        if hasattr(torch.compiler, "cudagraph_mark_step_begin"):
+            torch.compiler.cudagraph_mark_step_begin()
+
+        with torch.autocast(
+            device_type=self.device.type, dtype=self.amp_dtype, enabled=self.use_amp
+        ):
+            pred = model(x_t, t_in)
+            raw_loss = torch.nn.functional.mse_loss(pred, target, reduction="none")
+            loss = (raw_loss * weight).mean()
 
         model.train(was_training)
 
-        return loss
+        return loss.item()
 
-    ############ TRAINING
+    ############ TRAINING LOOP
 
     def _train_phase(
         self,
@@ -242,7 +354,7 @@ class IMFTrainer(BaseTrainer):
         else:
             log_phase, desc = "backward", "Training Backward Model"
 
-        total_loss = 0.0
+        total_loss = torch.tensor(0.0, device=self.device)
         for it in tqdm(range(num_iter), ascii=True, desc=desc):
             if self.lr_decay:
                 r = self.lr_final_ratio
@@ -264,26 +376,47 @@ class IMFTrainer(BaseTrainer):
 
             opt.zero_grad(set_to_none=True)
 
-            # Use functional MSE with no reduction to apply the per-sample weighting
-            pred = model(x_t, t_in)
-            raw_loss = torch.nn.functional.mse_loss(pred, target, reduction="none")
-            loss = (raw_loss * weight).mean()
+            if hasattr(torch.compiler, "cudagraph_mark_step_begin"):
+                torch.compiler.cudagraph_mark_step_begin()
 
-            loss.backward()
+            with torch.autocast(
+                device_type=self.device.type, dtype=self.amp_dtype, enabled=self.use_amp
+            ):
+                pred = model(x_t, t_in)
+                raw_loss = torch.nn.functional.mse_loss(pred, target, reduction="none")
+                loss = (raw_loss * weight).mean()
+
+            # Scale the loss and backward pass
+            self.scaler.scale(loss).backward()
+
+            # UNSCALE BEFORE CLIPPING
+            self.scaler.unscale_(opt)
 
             # --- BaseTrainer Metric Hook (pre-clip grad norm) ---
             self.log_inner_step(model, loss, opt, phase=log_phase, ipf_iter=imf_iter)
 
+            # Clip the unscaled gradients
             if self.grad_clip:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), self.grad_clip)
-            opt.step()
-            ema_helper.update(model)
-            total_loss += loss.item()
+
+            # Step optimizer through the scaler (skips step if inf/nan gradients are found)
+            self.scaler.step(opt)
+
+            # Update the scaler for the next iteration
+            self.scaler.update()
+
+            # ema_helper.update(model)
+            actual_model = getattr(model, "_orig_mod", model)
+            ema_helper.update(actual_model)
+
+            # We cast to .float() in case AMP is using float16, to prevent overflow
+            # when accumulating thousands of steps.
+            total_loss += loss.detach().float()
 
         for g, lr0 in zip(opt.param_groups, base_lrs):  # restore for the next phase
             g["lr"] = lr0
 
-        return total_loss / num_iter
+        return (total_loss / num_iter).item()
 
     def fit(
         self,
@@ -342,24 +475,38 @@ class IMFTrainer(BaseTrainer):
 
             # --- Intermediate Checkpoint Saving (EMA weights) ---
             if save_per and save_path and ((n + 1) % save_per == 0):
-                temp_b_model = self.ema_b.ema_copy(self.b_model)
+                temp_b_model = self.ema_b.ema_copy(self.b_model_base)
                 save_model(
                     temp_b_model,
-                    f"{save_path}/{self.b_model.__class__.__name__}_backward_checkpoint_{n+1}.pth",
+                    f"{save_path}/{self.b_model_base.__class__.__name__}_backward_checkpoint_{n+1}.pth",
                 )
 
-        # Load smoothed weights into the models used for evaluation
-        self.ema_f.ema(self.f_model)
-        self.ema_b.ema(self.b_model)
+        # Load smoothed weights into the BASE models used for evaluation
+        self.ema_f.ema(self.f_model_base)
+        self.ema_b.ema(self.b_model_base)
 
-        self.log_compute_cost([self.f_model, self.b_model])
+        # Log hardware footprint of the base models
+        self.log_compute_cost([self.f_model_base, self.b_model_base])
 
         if save_path:
             save_model(
-                self.b_model,
-                f"{save_path}/{self.b_model.__class__.__name__}_backward_final.pth",
+                self.b_model_base,
+                f"{save_path}/{self.b_model_base.__class__.__name__}_backward_final.pth",
             )
             save_model(
-                self.f_model,
-                f"{save_path}/{self.b_model.__class__.__name__}_forward_final.pth",
+                self.f_model_base,
+                f"{save_path}/{self.f_model_base.__class__.__name__}_forward_final.pth",
             )
+
+
+"""
+Opt:
+B - 1:02
+F - 1:04
+Final Generation - 0:20
+
+Unopt:
+B - 2:39
+f - 2:36
+Final Generation - 0:20
+"""

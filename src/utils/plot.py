@@ -85,7 +85,7 @@ def generate_and_plot(generative_model, eval_res, cfg):
         x_gen = generative_model.generate(
             n_samples=64, steps=cfg.eval_sim_steps, device=cfg.device
         )
-        if cfg.model_type == "ipf":
+        if cfg.model_type in ["ipf", "imf"]:
             save_path = os.path.join(
                 cfg.plots_path,
                 f"{cfg.epochs}ep_{cfg.sim_steps}ss_{cfg.num_iter}_grid.png",

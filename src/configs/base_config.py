@@ -22,19 +22,19 @@ class BaseConfig:
     # --- Training ---
     model_type: str = "imf"  # in [sde, minibatch, flow_m, ipf, imf]
     model_name: str = "IMF"  # in [SDE, ODE, FM, IPF, IMF]
-    epochs: int = 10
+    epochs: int = 1
     batch_size: int = 512
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
     grad_clip: float = 1.0
-    sim_steps: int = 50
-    num_iter: int = 5000
-    refresh_every: int = 500
+    sim_steps: int = 30
+    num_iter: int = 2000
+    refresh_every: int = 250
     num_cache_batches: int = 10
     save_interval: int = 500
 
     # --- Evaluation ---
-    eval_sim_steps: int = 50
+    eval_sim_steps: int = 30
     track_gen_samples: int = 512  # Small batch for fast mid-training tracking
     eval_gen_samples: int = 4000  # Massive batch for final end-of-training metric
 

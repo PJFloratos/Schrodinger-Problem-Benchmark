@@ -25,7 +25,7 @@ class DatasetType(str, Enum):
 
 
 # Pick the dataset to train on
-ACTIVE_DATASET = DatasetType.TOY2D
+ACTIVE_DATASET = DatasetType.MNIST
 
 
 def main(cfg: BaseConfig) -> None:

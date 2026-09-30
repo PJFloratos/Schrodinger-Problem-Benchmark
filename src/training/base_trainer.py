@@ -31,23 +31,30 @@ class BaseTrainer(ABC):
         optimizer: torch.optim.Optimizer,
         phase: str,
         ipf_iter: int,
+        log_freq: int = 50,
     ) -> None:
         """Inner-Phase Diagnostics."""
-        # Calculate pre-clip gradient norm
-        grad_norm = 0.0
-        for p in model.parameters():
-            if p.grad is not None:
-                param_norm = p.grad.detach().data.norm(2)
-                grad_norm += param_norm.item() ** 2
-        grad_norm = grad_norm**0.5
+        # 1. Skip expensive syncs and logging for most steps
+        if self.total_gradient_steps % log_freq != 0:
+            self.total_gradient_steps += 1
+            return
 
-        # Extract current learning rate
+        # 2. Compute grad norm entirely on the GPU
+        grads = [p.grad.detach() for p in model.parameters() if p.grad is not None]
+        if grads:
+            # Stack all norms on GPU, compute total norm, then do ONE .item() sync
+            grad_norm = (
+                torch.stack([torch.norm(g, p=2) for g in grads]).norm(p=2).item()
+            )
+        else:
+            grad_norm = 0.0
+
         current_lr = optimizer.param_groups[0].get("lr", 0.0)
 
         if hasattr(self.metric_logger, "log"):
             self.metric_logger.log(
                 {
-                    f"{phase}/inner_loss": loss.item(),
+                    f"{phase}/inner_loss": loss.item(),  # ONE sync every 50 steps.
                     f"{phase}/grad_norm_pre_clip": grad_norm,
                     f"{phase}/effective_lr": current_lr,
                     "global_step": self.total_gradient_steps,
@@ -71,7 +78,14 @@ class BaseTrainer(ABC):
 
     def log_phase_end(self, phase: str, ipf_iter: int, metrics: Dict[str, float]):
         """Logs aggregated phase metrics (Loss, MMD, Time, NFEs) received from fit()."""
-        logged_metrics = {f"{phase}/{k}": v for k, v in metrics.items()}
+        logged_metrics = {}
+        for k, v in metrics.items():
+            # Safely cast any rogue PyTorch tensors to standard Python numbers
+            if isinstance(v, torch.Tensor):
+                logged_metrics[f"{phase}/{k}"] = v.item()
+            else:
+                logged_metrics[f"{phase}/{k}"] = v
+
         logged_metrics["ipf_iteration"] = ipf_iter
 
         if hasattr(self.metric_logger, "log"):
