@@ -41,11 +41,10 @@ class IPFTrainer(BaseTrainer):
         ema_mu: float = 0.999,
         lr_decay: bool = True,  # cosine decay inside each training phase
         lr_final_ratio: float = 0.05,  # final lr = ratio * base lr
+        use_amp: bool = True,
     ):
         super().__init__(device=device, metric_logger=metric_logger)
 
-        self.f_model = forward_model.to(device)
-        self.b_model = backward_model.to(device)
         self.dataset = dataset
         self.f_opt = forward_opt
         self.b_opt = backward_opt
@@ -61,28 +60,69 @@ class IPFTrainer(BaseTrainer):
         self.criterion = nn.MSELoss()
         self.data_shape = tuple(self.dataset[0].shape)
 
+        # -------------------------------------------------------------
+        # 1. Global channels_last & Hardware Settings
+        # -------------------------------------------------------------
+        is_image = len(self.data_shape) == 3  # (C, H, W)
+        self.memory_format = (
+            torch.channels_last
+            if (self.device.type == "cuda" and is_image)
+            else torch.contiguous_format
+        )
+
+        if self.device.type == "cuda" and is_image:
+            torch.backends.cudnn.benchmark = True
+
+        # -------------------------------------------------------------
+        # 2. Precision & Compilation Settings
+        # -------------------------------------------------------------
+        self.use_amp = use_amp and (self.device.type == "cuda")
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        self.amp_dtype = torch.float16 if self.device.type == "cuda" else torch.bfloat16
+
+        # -------------------------------------------------------------
+        # 3. Data Pipeline & Probe Batch
+        # -------------------------------------------------------------
         self.dl = DataLoader(
             self.dataset, batch_size=self.batch_size, shuffle=True, drop_last=True
         )
         self._data_iter = self._repeater(self.dl)
 
-        # Set the probe batch for parameter drift tracking safely
         probe_batch = next(iter(self.dl))
         if isinstance(probe_batch, (list, tuple)):
             probe_batch = probe_batch[0]
-        self.fixed_probe_batch = probe_batch.to(self.device)
+        self.fixed_probe_batch = probe_batch.to(
+            self.device, memory_format=self.memory_format
+        )
+
+        # -------------------------------------------------------------
+        # 4. Models, EMA, and Compilation
+        # -------------------------------------------------------------
+        # Keep base models in self.memory_format
+        self.f_model_base = forward_model.to(device, memory_format=self.memory_format)
+        self.b_model_base = backward_model.to(device, memory_format=self.memory_format)
 
         # Initialize and register EMA trackers for both networks
-        self.ema_f = EMAHelper(mu=0.999, device=self.device)
-        self.ema_f.register(self.f_model)
-        self.ema_b = EMAHelper(mu=0.999, device=self.device)
-        self.ema_b.register(self.b_model)
+        self.ema_f = EMAHelper(mu=ema_mu, device=self.device)
+        self.ema_f.register(self.f_model_base)
+        self.ema_b = EMAHelper(mu=ema_mu, device=self.device)
+        self.ema_b.register(self.b_model_base)
+
+        # Persistent samplers for cache generation
+        self.f_sampler = copy.deepcopy(self.f_model_base)
+        self.b_sampler = copy.deepcopy(self.b_model_base)
+
+        self.use_compile = self.device.type == "cuda"
+        if self.use_compile:
+            self.f_model = torch.compile(self.f_model_base, mode="reduce-overhead")
+            self.b_model = torch.compile(self.b_model_base, mode="reduce-overhead")
+            self.f_sampler = torch.compile(self.f_sampler, mode="reduce-overhead")
+            self.b_sampler = torch.compile(self.b_sampler, mode="reduce-overhead")
+        else:
+            self.f_model = self.f_model_base
+            self.b_model = self.b_model_base
 
     ############ Reference Process
-
-    # def reference_drift(x: torch.Tensor) -> torch.Tensor:
-    #     """Ornstein-Uhlenbeck reference process used for the very first forward pass."""
-    #     return -x
 
     @staticmethod
     def reference_drift(x: torch.Tensor) -> torch.Tensor:
@@ -97,6 +137,14 @@ class IPFTrainer(BaseTrainer):
         while True:
             for batch in dataloader:
                 yield batch
+
+    def _next_data(self) -> torch.Tensor:
+        batch = next(self._data_iter)
+        if isinstance(batch, (list, tuple)):
+            batch = batch[0]
+        return batch.to(
+            self.device, memory_format=self.memory_format, non_blocking=True
+        )
 
     def _cache_iterator(self, X, T, U):
         """Fast infinite minibatch iterator over GPU tensors (no per-item DataLoader overhead)."""
@@ -113,7 +161,8 @@ class IPFTrainer(BaseTrainer):
     def _simulate_and_cache(
         self,
         source_model: nn.Module,
-        ema_helper: EMAHelper,
+        src_ema: EMAHelper,
+        sampler: nn.Module,
         direction: str,
         ipf_iteration: int,
     ):
@@ -125,18 +174,40 @@ class IPFTrainer(BaseTrainer):
         Dropping the last noise is only correct when producing final samples.
         """
         use_reference = ipf_iteration == 0 and direction == "f"
+
         if not use_reference:
-            sampler = ema_helper.ema_copy(source_model)
+            temp_model = src_ema.ema_copy(source_model)
+            if hasattr(sampler, "_orig_mod"):
+                sampler._orig_mod.load_state_dict(temp_model.state_dict())
+            else:
+                sampler.load_state_dict(temp_model.state_dict())
             sampler.eval()
 
-        def drift_fn(x, t):
-            return IPFTrainer.reference_drift(x) if use_reference else sampler(x, t)
+        def get_drift(x, t):
+            if use_reference:
+                return IPFTrainer.reference_drift(x)
+
+            if hasattr(torch.compiler, "cudagraph_mark_step_begin"):
+                torch.compiler.cudagraph_mark_step_begin()
+
+            with torch.autocast(
+                device_type=self.device.type, dtype=self.amp_dtype, enabled=self.use_amp
+            ):
+                return sampler(x, t)
 
         # Pre-allocate contiguous memory blocks (massive speedup)
         total_samples = self.num_cache_batches * self.batch_size * self.sde_steps
-        X_cache = torch.empty((total_samples, *self.data_shape), device=self.device)
+        X_cache = torch.empty(
+            (total_samples, *self.data_shape),
+            device=self.device,
+            memory_format=self.memory_format,
+        )
         T_cache = torch.empty((total_samples, 1), device=self.device)
-        U_cache = torch.empty((total_samples, *self.data_shape), device=self.device)
+        U_cache = torch.empty(
+            (total_samples, *self.data_shape),
+            device=self.device,
+            memory_format=self.memory_format,
+        )
 
         idx = 0
 
@@ -146,14 +217,14 @@ class IPFTrainer(BaseTrainer):
             leave=False,
             desc=f"Simulating {direction.upper()} Cache",
         ):
-            batch = next(self._data_iter)
-            if isinstance(batch, (list, tuple)):
-                batch = batch[0]
-            batch = batch.to(self.device)
-            b_size = batch.shape[0]
+            if direction == "f":
+                x = self._next_data()
+            else:
+                x = torch.randn(
+                    self.batch_size, *self.data_shape, device=self.device
+                ).contiguous(memory_format=self.memory_format)
 
-            # forward chain starts at data, backward chain starts at the prior N(0, I)
-            x = batch if direction == "f" else torch.randn_like(batch)
+            b_size = x.shape[0]
 
             for i in range(self.sde_steps):
                 # sampler runs its own chain: time i*h
@@ -163,24 +234,11 @@ class IPFTrainer(BaseTrainer):
                     (b_size, 1), 1.0 - (i + 1) * self.h, device=self.device
                 )
 
-                # drift = drift_fn(x, t_now)
-                # x_next = x + self.h * drift + math.sqrt(self.h) * torch.randn_like(x)
-
-                # if self.mean_match:
-                #     # DSB mean matching: F(x_k) - F(x_{k+1}) with F(x) = x + h * drift(x, t_k).
-                #     # Both evaluations use the same time index t_k (as in the official code).
-                #     drift_next = drift_fn(x_next, t_now)
-                #     target = (
-                #         (x + self.h * drift) - (x_next + self.h * drift_next)
-                #     ) / self.h
-                # else:
-                #     # Plain reverse-increment regression
-                #     target = (x - x_next) / self.h
-
-                drift = drift_fn(x, t_now)
+                drift = get_drift(x, t_now)
                 z = torch.randn_like(x)
                 x_next = x + self.h * drift + math.sqrt(self.h) * z
-                drift_next = drift_fn(x_next, t_now)
+
+                drift_next = get_drift(x_next, t_now)
                 target = -drift_next - z / math.sqrt(self.h)
 
                 # The trained network is queried at x_{k+1}, at the forward time of x_{k+1}.
@@ -206,8 +264,9 @@ class IPFTrainer(BaseTrainer):
     ) -> float:
         target_model.train()
         cache_iter = make_cache()
-        total_loss = 0.0
+        total_loss = torch.tensor(0.0, device=self.device)
         base_lrs = [g["lr"] for g in opt.param_groups]
+        prev_loss_val = None
 
         if direction == "f":
             phase = "forward"
@@ -229,22 +288,41 @@ class IPFTrainer(BaseTrainer):
                 # Check for cache staleness by pulling immediate next batch
                 x_batch, t_batch, u_batch = next(cache_iter)
                 opt.zero_grad(set_to_none=True)
-                pred_u = target_model(x_batch, t_batch)
-                fresh_loss = self.criterion(pred_u, u_batch)
-                if prev_loss is not None:
+
+                if hasattr(torch.compiler, "cudagraph_mark_step_begin"):
+                    torch.compiler.cudagraph_mark_step_begin()
+
+                with torch.autocast(
+                    device_type=self.device.type,
+                    dtype=self.amp_dtype,
+                    enabled=self.use_amp,
+                ):
+                    pred_u = target_model(x_batch, t_batch)
+                    fresh_loss = self.criterion(pred_u, u_batch)
+
+                if prev_loss_val is not None:
                     self.track_cache_staleness(
-                        prev_loss.item(), fresh_loss.item(), self.total_gradient_steps
+                        prev_loss_val, fresh_loss.item(), self.total_gradient_steps
                     )
-                # loss = fresh_loss
                 loss = self.h * fresh_loss
             else:
                 x_batch, t_batch, u_batch = next(cache_iter)
                 opt.zero_grad(set_to_none=True)
-                pred_u = target_model(x_batch, t_batch)
-                # loss = self.criterion(pred_u, u_batch)
-                loss = self.h * self.criterion(pred_u, u_batch)  # Apply h scaling
 
-            loss.backward()
+                if hasattr(torch.compiler, "cudagraph_mark_step_begin"):
+                    torch.compiler.cudagraph_mark_step_begin()
+
+                with torch.autocast(
+                    device_type=self.device.type,
+                    dtype=self.amp_dtype,
+                    enabled=self.use_amp,
+                ):
+                    pred_u = target_model(x_batch, t_batch)
+                    loss = self.h * self.criterion(pred_u, u_batch)
+
+            # Backpropagation under AMP
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(opt)
 
             # --- BaseTrainer Metric Hook ---
             self.log_inner_step(target_model, loss, opt, phase=phase, ipf_iter=ipf_iter)
@@ -253,17 +331,23 @@ class IPFTrainer(BaseTrainer):
                 torch.nn.utils.clip_grad_norm_(
                     target_model.parameters(), self.grad_clip
                 )
-            opt.step()
+
+            self.scaler.step(opt)
+            self.scaler.update()
 
             # Update EMA shadow weights immediately after every gradient step
-            ema_helper.update(target_model)
-            total_loss += loss.item()
-            prev_loss = loss
+            actual_model = getattr(target_model, "_orig_mod", target_model)
+            ema_helper.update(actual_model)
+
+            total_loss += loss.detach().float()
+
+            if it % self.refresh_every == 0 or prev_loss_val is None:
+                prev_loss_val = loss.item()
 
         for g, lr0 in zip(opt.param_groups, base_lrs):  # restore for the next phase
             g["lr"] = lr0
 
-        return total_loss / num_iter
+        return (total_loss / num_iter).item()
 
     def fit(
         self,
@@ -284,7 +368,9 @@ class IPFTrainer(BaseTrainer):
                 self.b_model,
                 self.b_opt,
                 self.ema_b,
-                lambda: self._simulate_and_cache(self.f_model, self.ema_f, "f", n),
+                lambda: self._simulate_and_cache(
+                    self.f_model_base, self.ema_f, self.f_sampler, "f", n
+                ),
                 inner_iterations,
                 direction="b",
                 ipf_iter=n,
@@ -315,7 +401,9 @@ class IPFTrainer(BaseTrainer):
                 self.f_model,
                 self.f_opt,
                 self.ema_f,
-                lambda: self._simulate_and_cache(self.b_model, self.ema_b, "b", n),
+                lambda: self._simulate_and_cache(
+                    self.b_model_base, self.ema_b, self.b_sampler, "b", n
+                ),
                 inner_iterations,
                 direction="f",
                 ipf_iter=n,
@@ -354,19 +442,30 @@ class IPFTrainer(BaseTrainer):
                 )
 
         # Load smoothed weights into the models used for evaluation
-        self.ema_f.ema(self.f_model)
-        self.ema_b.ema(self.b_model)
+        self.ema_f.ema(self.f_model_base)
+        self.ema_b.ema(self.b_model_base)
 
         # Log final hardware and time footprint
-        self.log_compute_cost([self.f_model, self.b_model])
+        self.log_compute_cost([self.f_model_base, self.b_model_base])
 
         # --- Final Model Saving ---
         if save_path:
             save_model(
-                self.b_model,
-                f"{save_path}/{self.b_model.__class__.__name__}_backward_final.pth",
+                self.b_model_base,
+                f"{save_path}/{self.b_model_base.__class__.__name__}_backward_final.pth",
             )
             save_model(
-                self.f_model,
-                f"{save_path}/{self.b_model.__class__.__name__}_forward_final.pth",
+                self.f_model_base,
+                f"{save_path}/{self.f_model_base.__class__.__name__}_forward_final.pth",
             )
+
+
+"""
+Opt:
+B - 1:23
+F - 1:22
+
+Unopt:
+B - 4:14
+F - 4:14
+"""
