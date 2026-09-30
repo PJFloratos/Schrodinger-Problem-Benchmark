@@ -22,6 +22,6 @@ run.log
 
 # Results from the scripts
 logs/
-models/
+/models/
 data/
 colab_training.ipynb
