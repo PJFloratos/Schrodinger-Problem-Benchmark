@@ -72,7 +72,7 @@ def create_flat_notebook(output_filename="colab_training.ipynb"):
 
     # 2. Iterate through the rest of the src/ modules[cite: 1]
     # Defining an order that typically helps with dependencies when flattened
-    module_folders = ["datasets", "models", "metrics", "training"]
+    module_folders = ["datasets", "models", "metrics", "training", "core"]
 
     for folder in module_folders:
         folder_path = os.path.join("src", folder)
@@ -83,6 +83,8 @@ def create_flat_notebook(output_filename="colab_training.ipynb"):
                         os.path.join(folder_path, file),
                         f"Module: {folder.capitalize()} - {file}",
                     )
+
+    add_cell("src/pipeline.py", "Pipeline")
 
     # 3. Add the main training script last[cite: 1]
     add_cell("train.py", "Main Training Script")
