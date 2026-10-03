@@ -7,6 +7,10 @@ from typing import Optional
 class BaseConfig:
     """Shared parameters across ALL experiments."""
 
+    # --- Reproducibility ---
+    seed: int = 999
+    eval_seed: int = seed + 3000
+
     # --- Paths ---
     plots_path: str = "./plots"
     models_path: str = "./models"
@@ -20,26 +24,29 @@ class BaseConfig:
     )
 
     # --- Training ---
-    model_type: str = "imf"  # in [sde, minibatch, flow_m, ipf, imf]
-    model_name: str = "IMF"  # in [SDE, ODE, FM, IPF, IMF]
-    epochs: int = 1
+    model_type: str = "flow_m"  # in [sde, minibatch, flow_m, ipf, imf]
+    model_name: str = "FM"  # in [SDE, ODE, FM, IPF, IMF]
+    epochs: int = 2
     batch_size: int = 512
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
     grad_clip: float = 1.0
-    sim_steps: int = 30
+    sim_steps: int = 50
     num_iter: int = 2000
     refresh_every: int = 250
     num_cache_batches: int = 10
     save_interval: int = 500
+    eval_per: int = 5
+    use_amp: bool = True
+    use_ema: bool = True
 
     # --- Evaluation ---
-    eval_sim_steps: int = 30
+    eval_sim_steps: int = 50
     track_gen_samples: int = 512  # Small batch for fast mid-training tracking
     eval_gen_samples: int = 4000  # Massive batch for final end-of-training metric
 
     def __post_init__(self):
         """Append dataset name to paths automatically to prevent overwriting."""
         self.plots_path = f"{self.plots_path}/{self.dataset_name}/{self.model_name}"
-        self.models_path = f"{self.models_path}/{self.dataset_name}{self.model_name}"
+        self.models_path = f"{self.models_path}/{self.dataset_name}/{self.model_name}"
         self.logs_path = f"{self.logs_path}/{self.dataset_name}/{self.model_name}"

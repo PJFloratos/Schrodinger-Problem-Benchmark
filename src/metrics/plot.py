@@ -1,5 +1,6 @@
-from src.utils import text_logger
+from src.core.solver import EulerSampler
 from src.configs import Toy2dConfig, MNISTConfig
+from src.utils import text_logger
 
 import torch
 from torchvision.utils import make_grid
@@ -7,7 +8,7 @@ from torchvision.utils import make_grid
 import matplotlib.pyplot as plt
 
 import os
-from typing import Dict
+from typing import Dict, Tuple
 
 
 logger = text_logger(__name__)
@@ -43,16 +44,40 @@ def plot_samples(
     plt.close(fig)
 
 
+def _sample_shape(cfg) -> Tuple[int, ...]:
+    """Per-sample shape for the solver. Must match `Evaluator.data_shape`."""
+    if isinstance(cfg, Toy2dConfig):
+        return (cfg.input_dim,)
+    if isinstance(cfg, MNISTConfig):
+        return (cfg.input_channels, cfg.image_size, cfg.image_size)
+    raise ValueError(f"Unknown configuration type: {type(cfg)}")
+
+
+@torch.no_grad()
+def _generate(generative_model, cfg, n_samples: int) -> torch.Tensor:
+    """Sample with the same EulerSampler setup (and seed) the Evaluator uses."""
+    sampler = EulerSampler(
+        model_type=generative_model.model_type,
+        steps=cfg.eval_sim_steps,
+        use_amp=cfg.use_amp and cfg.device.type == "cuda",
+    )
+    return sampler.generate(
+        model=generative_model,
+        shape=_sample_shape(cfg),
+        n_samples=n_samples,
+        device=cfg.device,
+        seed=cfg.eval_seed,
+    )
+
+
 def generate_and_plot(generative_model, eval_res, cfg):
     """Handles dataset-specific generation and routing to the correct plotter."""
     logger.debug("Simulating trajectories for final plot...")
     generative_model.eval()
 
     if isinstance(cfg, Toy2dConfig):
-        x_gen = generative_model.generate(
-            n_samples=cfg.eval_gen_samples, steps=cfg.eval_sim_steps, device=cfg.device
-        )
-        x_np = x_gen.cpu().numpy()
+        x_gen = _generate(generative_model, cfg, n_samples=cfg.eval_gen_samples)
+        x_np = x_gen.detach().cpu().numpy()
 
         plt.figure(figsize=(8, 8))
         plt.scatter(x_np[:, 0], x_np[:, 1], s=2, alpha=0.5, color="blue")
@@ -72,30 +97,33 @@ def generate_and_plot(generative_model, eval_res, cfg):
 
         if cfg.model_type in ["ipf", "imf"]:
             save_path = os.path.join(
-                cfg.plots_path, f"{cfg.epochs}ep_{cfg.sim_steps}ss_{cfg.num_iter}it.png"
+                cfg.plots_path,
+                f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_{cfg.num_iter}it.png",
             )
         else:
             save_path = os.path.join(
-                cfg.plots_path, f"{cfg.epochs}ep_{cfg.sim_steps}ss.png"
+                cfg.plots_path, f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss.png"
             )
         plt.savefig(save_path)
         plt.close()
 
     elif isinstance(cfg, MNISTConfig):
-        x_gen = generative_model.generate(
-            n_samples=64, steps=cfg.eval_sim_steps, device=cfg.device
-        )
+        x_gen = _generate(generative_model, cfg, n_samples=64)
+
         if cfg.model_type in ["ipf", "imf"]:
             save_path = os.path.join(
                 cfg.plots_path,
-                f"{cfg.epochs}ep_{cfg.sim_steps}ss_{cfg.num_iter}_grid.png",
+                f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_{cfg.num_iter}_grid.png",
             )
         else:
             save_path = os.path.join(
-                cfg.plots_path, f"{cfg.epochs}ep_{cfg.sim_steps}ss_grid.png"
+                cfg.plots_path, f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_grid.png"
             )
         plot_samples(
             x_gen, eval_res, path=save_path, title="MNIST Generated Samples (t=1)"
         )
+
+    else:
+        raise ValueError(f"Unknown configuration type: {type(cfg)}")
 
     logger.debug(f"Plots successfully saved to {save_path}.")

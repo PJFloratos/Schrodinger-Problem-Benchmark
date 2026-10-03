@@ -3,6 +3,7 @@ import torch.nn as nn
 import math
 
 from tqdm import tqdm
+from typing import Optional
 
 
 class SinusoidalTimeEmbedding(nn.Module):
@@ -109,66 +110,3 @@ class SimpleUNet(nn.Module):
         x = self.out(self.out_act(self.out_norm(torch.cat([x, x0], dim=1))))
 
         return x
-
-    @torch.no_grad()
-    def generate(
-        self,
-        n_samples=64,
-        steps=50,
-        device="cpu",
-        return_path=False,
-        t_end=1.0,
-        batch_size=512,
-        amp=True,
-    ):
-        device = torch.device(device)
-        on_cuda = device.type == "cuda"
-
-        # Safely determine AMP variables
-        use_amp = amp and on_cuda
-        amp_dtype = torch.float16 if on_cuda else torch.bfloat16
-
-        if on_cuda:
-            torch.backends.cudnn.benchmark = True
-
-        h = 1.0 / steps
-        integration_steps = int(steps * t_end)
-
-        # Fetch the model's actual sigma
-        sigma = getattr(self, "sigma", 1.0)
-
-        n_chunks = math.ceil(n_samples / batch_size)
-        pbar = tqdm(
-            total=n_chunks * integration_steps, ascii=True, desc="    Generating"
-        )
-
-        out = []
-        for start in range(0, n_samples, batch_size):
-            n = min(batch_size, n_samples - start)
-            x = torch.randn(n, self.channels, 28, 28, device=device)
-            t = torch.empty(n, 1, device=device)  # reused every step
-
-            for i in range(integration_steps):
-                t.fill_(i * h)
-
-                # Apply the autocast wrapper during generation
-                with torch.autocast(
-                    device_type=device.type, dtype=amp_dtype, enabled=use_amp
-                ):
-                    drift = self.forward(x, t)
-
-                if self.model_type in ["minibatch", "flow_m"]:
-                    x = x + h * drift
-                elif self.model_type == "sde":
-                    noise = (
-                        torch.randn_like(x)
-                        if i < integration_steps - 1
-                        else torch.zeros_like(x)
-                    )
-                    x = x + h * drift + (h**0.5) * noise
-                pbar.update(1)
-
-            out.append(x)
-
-        pbar.close()
-        return torch.cat(out).contiguous()

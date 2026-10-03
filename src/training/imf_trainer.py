@@ -1,5 +1,6 @@
-from src.training import BaseTrainer
-from src.utils import EMAHelper, save_model, text_logger
+from src.training.base_trainer import BaseTrainer
+from src.models.ema import EMAHelper
+from src.utils import save_model, text_logger
 
 import torch
 from torch import nn
