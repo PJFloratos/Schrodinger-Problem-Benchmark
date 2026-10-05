@@ -13,32 +13,29 @@ logger = text_logger(__name__)
 
 def save_model(model: torch.nn.Module, path: str, stops=False) -> None:
     """
-    Save a PyTorch model to a specified path.
+    Save a PyTorch model to a specified path quietly.
     """
-    target_path = Path("/".join(path.split("/")[:-1]))
-    model_name = path.split("/")[-1]
+    p = Path(path)
+    target_path = p.parent
+    model_name = p.name
 
     if not (model_name.endswith(".pth") or model_name.endswith(".pt")):
-        logger.error("Wrong extension: Expecting `.pt` or `.pth`.")
+        logger.error(f"Wrong extension for `{model_name}`: Expecting `.pt` or `.pth`.")
         return
 
     # Creating the directory that the model is going to be saved if not exists
-    if not target_path.exists():
-        target_path.mkdir(parents=True, exist_ok=True)
+    target_path.mkdir(parents=True, exist_ok=True)
 
-    # If path already exists
-    if Path(path).is_file():
-        logger.info(f"Model `{model_name}` already exists on `{target_path}`.")
+    # Handle existing files quietly
+    if p.is_file():
         if stops:
+            logger.debug(f"Model `{model_name}` already exists; skipping save.")
             return
-        logger.warning(f"Deleting `{path}`.")
         remove(path)
 
-    # Saving the Model to the given path
-    logger.info(f"Saving Model `{model_name}` to `{target_path}`.")
+    # Save the Model
     torch.save(obj=model.state_dict(), f=path)
-
-    logger.debug(f"Model Successfully Saved to `{path}`.")
+    logger.debug(f"Model successfully saved to `{path}`.")
 
 
 def load_model(
@@ -62,6 +59,6 @@ def load_model(
     # Set the model to evaluation mode
     model.eval()
 
-    logger.debug("Model succesfully loaded.")
+    logger.debug(f"Model successfully loaded from `{model_path}`.")
 
     return model

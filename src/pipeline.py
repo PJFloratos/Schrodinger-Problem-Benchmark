@@ -87,14 +87,12 @@ class Pipeline:
         self, model: torch.nn.Module, direction: str
     ) -> Dict[str, float]:
         """Internal callback passed to the trainers for mid-training evaluation."""
-        if direction == "b":
-            return self.evaluator.evaluate(
-                model, num_samples=self.cfg.track_gen_samples, use_amp=self.cfg.use_amp
-            )
-        elif direction == "f":
-            # Placeholder: If you want to evaluate Prior matching MMD later
-            return {}
-        return {}
+        return self.evaluator.evaluate(
+            model,
+            num_samples=self.cfg.track_gen_samples,
+            use_amp=self.cfg.use_amp,
+            direction=direction,  # Let the evaluator handle the routing
+        )
 
     def _get_model_class_and_kwargs(self):
         """Resolves the base architecture based on the dataset config."""
@@ -163,11 +161,6 @@ class Pipeline:
         return gen_model, metrics
 
     def _run_ipf(self) -> torch.nn.Module:
-        # model_class, kwargs = self._get_model_class_and_kwargs()
-
-        # f_model = model_class(**kwargs, model_type="sde").to(self.cfg.device)
-        # b_model = model_class(**kwargs, model_type="sde").to(self.cfg.device)
-
         f_model = self._build_model("sde", SeedOffsets.AUX_INIT, name="f_model")
         b_model = self._build_model("sde", SeedOffsets.GEN_INIT, name="b_model")
         self.logger.info(f"IPF Models deployed on: {self.cfg.device}")
@@ -191,29 +184,28 @@ class Pipeline:
             backward_opt=b_opt,
             device=self.cfg.device,
             metric_logger=self.metric_logger,
+            seed=self.cfg.seed,
             batch_size=self.cfg.batch_size,
             sde_steps=self.cfg.sim_steps,
             num_cache_batches=self.cfg.num_cache_batches,
             grad_clip=self.cfg.grad_clip,
             refresh_every=self.cfg.refresh_every,
+            use_amp=self.cfg.use_amp,
+            use_ema=self.cfg.use_ema,
         )
 
-        trainer.fit(
+        gen_model, metrics = trainer.fit(
             ipf_iterations=self.cfg.epochs,
             inner_iterations=self.cfg.num_iter,
             save_per=self.cfg.save_interval,
             save_path=self.cfg.models_path,
-            eval_callback=self.eval_callback,
+            eval_callback=self._eval_callback,
+            eval_per=self.cfg.eval_per,
         )
 
-        return b_model
+        return gen_model, metrics
 
     def _run_imf(self) -> torch.nn.Module:
-        # model_class, kwargs = self._get_model_class_and_kwargs()
-        #
-        # f_model = model_class(**kwargs, model_type="sde").to(self.cfg.device)
-        # b_model = model_class(**kwargs, model_type="sde").to(self.cfg.device)
-
         f_model = self._build_model("sde", SeedOffsets.AUX_INIT, name="f_model")
         b_model = self._build_model("sde", SeedOffsets.GEN_INIT, name="b_model")
         self.logger.info(f"IMF Models deployed on: {self.cfg.device}")
@@ -237,19 +229,23 @@ class Pipeline:
             backward_opt=b_opt,
             device=self.cfg.device,
             metric_logger=self.metric_logger,
+            seed=self.cfg.seed,
             batch_size=self.cfg.batch_size,
             sde_steps=self.cfg.sim_steps,
             num_cache_batches=self.cfg.num_cache_batches,
             grad_clip=self.cfg.grad_clip,
             refresh_every=self.cfg.refresh_every,
+            use_amp=self.cfg.use_amp,
+            use_ema=self.cfg.use_ema,
         )
 
-        trainer.fit(
+        gen_model, metrics = trainer.fit(
             imf_iterations=self.cfg.epochs,
             inner_iterations=self.cfg.num_iter,
             save_per=self.cfg.save_interval,
             save_path=self.cfg.models_path,
-            eval_callback=self.eval_callback,
+            eval_callback=self._eval_callback,
+            eval_per=self.cfg.eval_per,
         )
 
-        return b_model
+        return gen_model, metrics

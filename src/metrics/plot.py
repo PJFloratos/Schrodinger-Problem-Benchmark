@@ -1,5 +1,7 @@
 from src.core.solver import EulerSampler
+from src.metrics.evaluator import _derive_seed
 from src.configs import Toy2dConfig, MNISTConfig
+from src.utils.seed import SeedOffsets
 from src.utils import text_logger
 
 import torch
@@ -65,8 +67,8 @@ def _generate(generative_model, cfg, n_samples: int) -> torch.Tensor:
         model=generative_model,
         shape=_sample_shape(cfg),
         n_samples=n_samples,
-        device=cfg.device,
-        seed=cfg.eval_seed,
+        init_seed=_derive_seed(cfg.eval_seed, SeedOffsets.EVAL_SOLVER_INIT),
+        step_seed=_derive_seed(cfg.eval_seed, SeedOffsets.EVAL_SOLVER_STEP),
     )
 
 

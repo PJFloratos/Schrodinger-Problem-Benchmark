@@ -130,13 +130,6 @@ class Trainer(BaseTrainer):
             torch.manual_seed(seed)
             yield
 
-    def _randn_like(self, ref: torch.Tensor, gen: torch.Generator) -> torch.Tensor:
-        # torch.randn_like has no `generator` argument, so draw explicitly and put the
-        # result in the memory format randn_like would have preserved.
-        return torch.randn(
-            ref.shape, device=ref.device, dtype=ref.dtype, generator=gen
-        ).contiguous(memory_format=self.memory_format)
-
     # ------------------------------------------------------------------
     # Data
     # ------------------------------------------------------------------

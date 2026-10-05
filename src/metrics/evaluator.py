@@ -18,6 +18,7 @@ import numpy as np
 from scipy.stats import wasserstein_distance
 from scipy.optimize import linear_sum_assignment
 
+import math
 import time
 from tqdm import tqdm
 from typing import Dict, Optional, Sequence, Union, Tuple, Callable
@@ -53,6 +54,7 @@ class Evaluator:
         self.n_gen_samples = n_gen_samples
         self.ground_truth_v = ground_truth_v
         self.seed = seed
+        self._x_test = None
 
         self.dl = DataLoader(
             test_ds,
@@ -67,6 +69,12 @@ class Evaluator:
         self._noise_gen = torch.Generator(device=self.device)
         self._val_seed = _derive_seed(seed, SeedOffsets.EVAL_VAL_NOISE)
 
+        self._forward_sim_gen = torch.Generator(device=self.device)
+        self._forward_sim_seed = _derive_seed(seed, SeedOffsets.EVAL_FORWARD_SIM)
+
+        self._prior_gen = torch.Generator(device=self.device)
+        self._prior_seed = _derive_seed(seed, SeedOffsets.EVAL_PRIOR_NOISE)
+
         # Global RNGs that evaluate() snapshots and restores (see _rng_shield).
         if self.device.type == "cuda":
             idx = (
@@ -80,8 +88,6 @@ class Evaluator:
 
         # Sniff dataset shape to decide which metrics to run. Looking at one item
         item = test_ds[0]
-        if isinstance(item, (list, tuple)):
-            item = item[0]
         self.is_image_data = item.ndim == 3  # (C, H, W) per item -> 4D batches
 
         # Capture the raw shape of a single data item for the solver
@@ -114,10 +120,13 @@ class Evaluator:
         num_samples: int = None,  # To overwrite the global one
         log: bool = False,
         use_amp: bool = True,
+        direction: str = "b",
     ) -> Dict[str, float]:
 
         with torch.random.fork_rng(devices=self._rng_devices):
-            return self._evaluate(model, backward_model, num_samples, log, use_amp)
+            return self._evaluate(
+                model, backward_model, num_samples, log, use_amp, direction
+            )
 
     def _evaluate(
         self,
@@ -126,15 +135,15 @@ class Evaluator:
         num_samples: Optional[int],
         log: bool,
         use_amp: bool,
+        direction: str,
     ) -> Dict[str, float]:
-        Evaluator.logger.debug("Starting Evaluation Process...")
-
         model.eval()
         if backward_model:
             backward_model.eval()
 
-        # Validation & Simulation
-        loss, x_true = self._compute_validation_loss(model)
+        # Delegate dataset fetching to _get_test_data unconditionally to ensure
+        # it is cached in self._x_test and reused efficiently across evaluations.
+        x_true = self._get_test_data()
 
         # FID / precision / recall / MMD depend on the sample counts, so both sides use
         # exactly N samples. N can't exceed the number of real samples available.
@@ -146,35 +155,73 @@ class Evaluator:
                 f"{len(x_true)}; evaluating with {n_eval}."
             )
 
-        x_gen, gen_time = self._simulate_paths(
-            model,
-            num_samples=n_eval if num_samples else len(x_true),
+        loss = None
+        sampler = EulerSampler(
+            model_type=model.model_type,
+            steps=self.sde_steps,
             use_amp=use_amp,
         )
 
-        # Real reference set of the same size: a fixed subset, identical on every call.
-        # (eval_loss above still uses the full test set.)
-        x_ref = x_true[self._ref_perm[:n_eval]]
+        if direction == "b":
+            # Validation & Simulation
+            loss = self._compute_validation_loss(model)
+
+            # Backward Chain: Prior -> Data
+            gen_start = time.time()
+            x_gen = sampler.generate(
+                model=model,
+                shape=self.data_shape,
+                n_samples=n_eval,
+                device=self.device,
+                init_seed=_derive_seed(self.seed, SeedOffsets.EVAL_SOLVER_INIT),
+                step_seed=_derive_seed(self.seed, SeedOffsets.EVAL_SOLVER_STEP),
+            )
+            gen_time = time.time() - gen_start
+
+            # Real reference set of the same size
+            x_ref = x_true[self._ref_perm[:n_eval]]
+        else:
+            # Forward Chain: Data -> Prior
+            # 1. Forward Chain: Data -> Prior
+            x_init = x_true[self._ref_perm[:n_eval]].to(
+                self.device, memory_format=self.memory_format
+            )
+
+            gen_start = time.time()
+            x_gen = sampler.generate(
+                model=model,
+                x_init=x_init,
+                batch_size=256,
+                step_seed=self._forward_sim_seed,
+            )
+            gen_time = time.time() - gen_start
+
+            # Re-seed prior target generator
+            self._prior_gen.manual_seed(self._prior_seed)
+            x_ref = torch.randn(
+                x_gen.shape,
+                device=self.device,
+                dtype=x_gen.dtype,
+                generator=self._prior_gen,
+            ).contiguous(memory_format=self.memory_format)
 
         # Eval Metrics
-        Evaluator.logger.debug("Calculating Evaluation Metrics...")
         results = {
-            "eval_loss": float(loss),
             "eval_samples": n_eval,
             "eval_NFEs": self.sde_steps,
             "eval_generation_time": gen_time,
         }
+        if loss is not None:
+            results["eval_loss"] = float(loss)
 
-        if self.is_image_data:
+        if self.is_image_data and direction == "b":
             results.update(get_generative_quality_metrics(x_ref, x_gen))
         else:
             results["eval_MMD"] = float(get_mmd(x_ref, x_gen, device=self.device))
 
             # Ground Truth
-            if self.ground_truth_v:
+            if self.ground_truth_v and direction == "b":
                 results["drift_MSE"] = get_drift_mse(model, self.ground_truth_v, x_gen)
-
-        Evaluator.logger.debug("Evaluation Process Completed Successfully.")
 
         if log:
             self.logger.info("Evaluation Metrics:")
@@ -186,7 +233,12 @@ class Evaluator:
 
         return results
 
-    def _compute_validation_loss(self, model: nn.Module) -> Tuple[float, torch.Tensor]:
+    def _get_test_data(self) -> torch.Tensor:
+        if self._x_test is None:
+            self._x_test = torch.cat([z.cpu() for z in self.dl], dim=0)
+        return self._x_test
+
+    def _compute_validation_loss(self, model: nn.Module) -> float:
         """Calculates regression health against straight-line/SDE paths and extracts targets."""
 
         gen = self._noise_gen
@@ -195,10 +247,10 @@ class Evaluator:
         gen.manual_seed(self._val_seed)
 
         total_loss = 0.0
-        x_true_list = []
-
         with torch.inference_mode():
-            for z_batch in tqdm(self.dl, ascii=True, desc="    Calculating Loss"):
+            for z_batch in tqdm(
+                self.dl, ascii=True, desc="    Calculating Loss", leave=False
+            ):
                 z_batch = z_batch.to(
                     self.device, non_blocking=True, memory_format=self.memory_format
                 )
@@ -230,37 +282,4 @@ class Evaluator:
 
                 total_loss += batch_loss.item()
 
-                x_true_list.append(z_batch.cpu())
-
-        return total_loss / len(self.dl), torch.cat(x_true_list, dim=0)
-
-    def _simulate_paths(
-        self, model: nn.Module, num_samples: int, use_amp: bool
-    ) -> Tuple[torch.Tensor, float]:
-        """Handles trajectory simulation and generation timing."""
-        gen_start = time.time()
-
-        # Overwrite the global n_gen_samples
-        if num_samples:
-            n_samples = num_samples
-        else:
-            n_samples = self.n_gen_samples
-
-        # Instantiate the decoupled solver
-        sampler = EulerSampler(
-            model_type=model.model_type,
-            steps=self.sde_steps,
-            use_amp=use_amp,
-        )
-
-        # Seeded => same x_T (and SDE step noise) at every evaluation and for every
-        # solver type, so metrics differ only because the weights differ.
-        x_gen_tensor = sampler.generate(
-            model=model,
-            shape=self.data_shape,
-            n_samples=n_samples,
-            device=self.device,
-            seed=self.seed,
-        )
-
-        return x_gen_tensor, time.time() - gen_start
+        return total_loss / len(self.dl)

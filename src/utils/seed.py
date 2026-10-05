@@ -16,6 +16,10 @@ class SeedOffsets:
     EVAL_VAL_NOISE = 101
     EVAL_LOADER = 102
     EVAL_REF_PERM = 103
+    EVAL_FORWARD_SIM = 104
+    EVAL_PRIOR_NOISE = 105
+    EVAL_SOLVER_INIT = 106
+    EVAL_SOLVER_STEP = 107
 
     # --- Trainer Streams (1000+) ---
     TRAIN_SPLIT = 1000
@@ -24,6 +28,20 @@ class SeedOffsets:
     TRAIN_NOISE = 1003
     TRAIN_VALID_NOISE = 1004
     TRAIN_EVAL = 1005
+
+    # --- IPF Trainer Streams (1100+) ---
+    IPF_SHUFFLE = 1100
+    IPF_CACHE_NOISE = 1101
+    IPF_CACHE_PERM = 1102
+    IPF_EVAL = 1103
+
+    # --- IMF Trainer Streams (1200+) ---
+    IMF_SHUFFLE = 1200
+    IMF_PAIR_NOISE = 1201
+    IMF_PAIR_PERM = 1202
+    IMF_BRIDGE_NOISE = 1203
+    IMF_PROBE_NOISE = 1204
+    IMF_EVAL = 1205
 
 
 def set_all_seeds(seed: int):
