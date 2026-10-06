@@ -43,6 +43,13 @@ class SeedOffsets:
     IMF_PROBE_NOISE = 1204
     IMF_EVAL = 1205
 
+    # --- SF2M Trainer Streams (1300+) ---
+    SF2M_SHUFFLE = 1300
+    SF2M_CACHE_NOISE = 1301
+    SF2M_CACHE_PERM = 1302
+    SF2M_BRIDGE_NOISE = 1303
+    SF2M_EVAL = 1305
+
 
 def set_all_seeds(seed: int):
     """Locks down all RNGs and forces deterministic hardware execution."""

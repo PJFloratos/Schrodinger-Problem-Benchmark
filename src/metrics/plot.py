@@ -66,6 +66,7 @@ def _generate(generative_model, cfg, n_samples: int) -> torch.Tensor:
     return sampler.generate(
         model=generative_model,
         shape=_sample_shape(cfg),
+        device=cfg.device,
         n_samples=n_samples,
         init_seed=_derive_seed(cfg.eval_seed, SeedOffsets.EVAL_SOLVER_INIT),
         step_seed=_derive_seed(cfg.eval_seed, SeedOffsets.EVAL_SOLVER_STEP),
@@ -102,6 +103,12 @@ def generate_and_plot(generative_model, eval_res, cfg):
                 cfg.plots_path,
                 f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_{cfg.num_iter}it.png",
             )
+
+        elif cfg.model_type in ["sf2m"]:
+            save_path = os.path.join(
+                cfg.plots_path,
+                f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_{cfg.num_iter}it_{cfg.ot_method}.png",
+            )
         else:
             save_path = os.path.join(
                 cfg.plots_path, f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss.png"
@@ -116,6 +123,11 @@ def generate_and_plot(generative_model, eval_res, cfg):
             save_path = os.path.join(
                 cfg.plots_path,
                 f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_{cfg.num_iter}_grid.png",
+            )
+        elif cfg.model_type in ["sf2m"]:
+            save_path = os.path.join(
+                cfg.plots_path,
+                f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_{cfg.num_iter}it_{cfg.ot_method}.png",
             )
         else:
             save_path = os.path.join(

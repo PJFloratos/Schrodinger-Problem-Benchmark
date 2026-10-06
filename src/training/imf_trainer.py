@@ -490,10 +490,10 @@ class IMFTrainer(BaseTrainer):
 
             if self.use_amp:
                 # Scale the loss and backward pass
-                self.scaler.scale(loss).backward()
+                scaler.scale(loss).backward()
 
                 # UNSCALE BEFORE CLIPPING
-                self.scaler.unscale_(opt)
+                scaler.unscale_(opt)
             else:
                 loss.backward()
 
@@ -506,10 +506,10 @@ class IMFTrainer(BaseTrainer):
 
             if self.use_amp:
                 # Step optimizer through the scaler (skips step if inf/nan gradients are found)
-                self.scaler.step(opt)
+                scaler.step(opt)
 
                 # Update the scaler for the next iteration
-                self.scaler.update()
+                scaler.update()
             else:
                 opt.step()
 

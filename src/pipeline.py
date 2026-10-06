@@ -1,5 +1,5 @@
 from src.models import VelocityMLP, SimpleUNet
-from src.training import Trainer, IPFTrainer, IMFTrainer
+from src.training import Trainer, IPFTrainer, IMFTrainer, SF2MTrainer
 from src.metrics import Evaluator
 from src.metrics.plot import generate_and_plot
 from src.utils import text_logger
@@ -80,6 +80,8 @@ class Pipeline:
             return self._run_ipf()
         elif self.cfg.model_type == "imf":
             return self._run_imf()
+        elif self.cfg.model_type == "sf2m":
+            return self._run_sf2m()
         else:
             return self._run_standard()
 
@@ -248,4 +250,51 @@ class Pipeline:
             eval_per=self.cfg.eval_per,
         )
 
+        return gen_model, metrics
+
+    def _run_sf2m(self) -> torch.nn.Module:
+        u_model = self._build_model("sde", SeedOffsets.GEN_INIT, name="u_model")
+        s_model = self._build_model("sde", SeedOffsets.AUX_INIT, name="s_model")
+        self.logger.info(f"SF2M Models deployed on: {self.cfg.device}")
+
+        u_opt = optim.AdamW(
+            u_model.parameters(),
+            lr=self.cfg.learning_rate,
+            weight_decay=self.cfg.weight_decay,
+        )
+        s_opt = optim.AdamW(
+            s_model.parameters(),
+            lr=self.cfg.learning_rate,
+            weight_decay=self.cfg.weight_decay,
+        )
+
+        trainer = SF2MTrainer(
+            u_model=u_model,
+            s_model=s_model,
+            dataset=self.train_dataset,
+            u_opt=u_opt,
+            s_opt=s_opt,
+            device=self.cfg.device,
+            metric_logger=self.metric_logger,
+            seed=self.cfg.seed,
+            batch_size=self.cfg.batch_size,
+            sde_steps=self.cfg.sim_steps,
+            num_cache_batches=self.cfg.num_cache_batches,
+            ot_method=getattr(self.cfg, "ot_method", "minibatch"),
+            grad_clip=self.cfg.grad_clip,
+            use_amp=self.cfg.use_amp,
+            use_ema=self.cfg.use_ema,
+        )
+
+        gen_model, metrics = trainer.fit(
+            outer_iterations=self.cfg.epochs,
+            inner_iterations=self.cfg.num_iter,
+            save_per=self.cfg.save_interval,
+            save_path=self.cfg.models_path,
+            eval_callback=self._eval_callback,
+            eval_per=self.cfg.eval_per,
+        )
+
+        # gen_model here is the SF2MInferenceWrapper, which combines u_model and s_model
+        # to generate the correct drift for inference via Anderson's formula.
         return gen_model, metrics

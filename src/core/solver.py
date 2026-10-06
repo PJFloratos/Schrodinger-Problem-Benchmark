@@ -78,7 +78,7 @@ class EulerSampler:
         pbar = tqdm(
             total=n_chunks * integration_steps,
             ascii=True,
-            desc="    Generating Samples",
+            desc=desc,
             leave=False,
         )
 
@@ -98,6 +98,7 @@ class EulerSampler:
             t = torch.empty(n, 1, device=device)
 
             for i in range(integration_steps):
+                # The wrapper inherently handles time flipping internally if reverse simulation is requested.
                 t.fill_(i * h)
 
                 with torch.autocast(
@@ -107,7 +108,7 @@ class EulerSampler:
 
                 if self.model_type in ["minibatch", "flow_m"]:
                     x = x + h * drift
-                elif self.model_type == "sde":
+                elif self.model_type in ["sde", "sf2m"]:
                     # Backward chain drops SDE noise on the final step; Forward chain does not.
                     drop_noise = (not is_forward) and (i == integration_steps - 1)
 

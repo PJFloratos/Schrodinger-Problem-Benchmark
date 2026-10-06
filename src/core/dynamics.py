@@ -79,6 +79,24 @@ class ConditionalVectorField:
             x_t = t_expand * z_batch + (1.0 - t_expand) * x_0
             target_u = z_batch - x_0
 
+        elif model_type == "sf2m":
+            # x_0 = Noise, z_batch = Data. Generation is t=0 (Noise) -> t=1 (Data)
+            x_0 = cls._randn_like(z_batch, gen, memory_format)
+            eps = cls._randn_like(z_batch, gen, memory_format)
+            sigma = 1.0
+
+            t_safe = t_expand.clamp(1e-4, 1.0 - 1e-4)
+            sigma_t = sigma * torch.sqrt(t_safe * (1.0 - t_safe))
+
+            # Reparameterized conditional sample
+            x_t = t_safe * z_batch + (1.0 - t_safe) * x_0 + sigma_t * eps
+
+            # Evaluator tests the combined forward SDE drift (noise -> data): u_t^o + 0.5 * sigma^2 * s_t
+            # With the new parameterization: v - sigma * sqrt(t/(1-t)) * eps
+            target_u = (z_batch - x_0) - sigma * torch.sqrt(
+                t_safe / (1.0 - t_safe)
+            ) * eps
+
         else:
             raise ValueError(f"Unknown model_type: {model_type}")
 
