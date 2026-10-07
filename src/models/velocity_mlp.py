@@ -1,27 +1,9 @@
+from src.models.components import SinusoidalTimeEmbedding
+
 import torch
 from torch import nn
 
 import math
-
-
-class SinusoidalTimeEmbedding(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, t):
-        # t shape: (Batch, 1)
-        device = t.device
-        half_dim = self.dim // 2
-
-        # Create varying frequencies
-        embeddings = math.log(10000) / (half_dim - 1)
-        embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
-
-        # Apply sine and cosine
-        embeddings = t * embeddings[None, :]
-        embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
-        return embeddings
 
 
 class VelocityMLP(nn.Module):

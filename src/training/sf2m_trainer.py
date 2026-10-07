@@ -1,6 +1,7 @@
 from src.training.base_trainer import BaseTrainer
 from src.core.dynamics import ConditionalVectorField
-from src.models.ema import EMAHelper
+from src.core.solver import EulerSampler
+from src.models.components import SF2MInferenceWrapper
 from src.utils.seed import SeedOffsets
 from src.utils import save_model, text_logger
 
@@ -16,51 +17,6 @@ import time
 from contextlib import contextmanager
 from tqdm import tqdm
 from typing import Any, Callable, Optional, Tuple, Union, Iterator
-
-
-class SF2MInferenceWrapper(nn.Module):
-    """
-    Adapter exposing the SDE drift of the learned (u, s) pair to the pipeline.
-    t=0 (Prior) -> t=1 (Data).
-    """
-
-    def __init__(
-        self,
-        u_model: nn.Module,
-        s_model: nn.Module,
-        sigma: float,
-        direction: str = "b",
-        eps: float = 1e-4,
-    ):
-        super().__init__()
-        self.u = u_model
-        self.s = s_model
-        self.sigma = sigma
-        self.direction = direction
-        self.eps = eps
-        self.model_type = "sf2m"
-
-    def forward(self, x, t):
-        # direction="b" (Prior -> Data), t passed is 0 -> 1.
-        # direction="f" (Data -> Prior), t passed is 0 -> 1 by the sampler,
-        # but we must treat it internally as 1 -> 0 for the networks.
-        t_real = 1.0 - t if self.direction == "f" else t
-        t_safe = torch.as_tensor(t_real, device=x.device, dtype=x.dtype).reshape(-1)
-        if t_safe.numel() == 1:
-            t_safe = t_safe.expand(x.shape[0])
-        t_safe = t_safe.reshape(-1, 1).clamp(self.eps, 1.0 - self.eps)
-
-        v_hat = self.u(x, t_safe)
-        eps_hat = self.s(x, t_safe)
-
-        if self.direction == "b":
-            # Forward SDE drift: u_t^o + 0.5 * sigma^2 * s_t
-            drift = v_hat - self.sigma * torch.sqrt(t_safe / (1.0 - t_safe)) * eps_hat
-        else:
-            # Reverse SDE drift (Anderson): -u_t^o + 0.5 * sigma^2 * s_t
-            drift = -v_hat - self.sigma * torch.sqrt((1.0 - t_safe) / t_safe) * eps_hat
-
-        return drift
 
 
 class SF2MTrainer(BaseTrainer):
@@ -93,17 +49,20 @@ class SF2MTrainer(BaseTrainer):
         use_amp: bool = True,
         use_ema: bool = True,
         sinkhorn_iters: int = 200,
-        **kwargs,
     ):
-        super().__init__(device=device, metric_logger=metric_logger)
-
         assert ot_method in ("minibatch", "sinkhorn", "greedy"), ot_method
 
-        self.dataset = dataset
+        super().__init__(
+            dataset=dataset,
+            batch_size=batch_size,
+            seed=seed,
+            device=device,
+            metric_logger=metric_logger,
+            use_amp=use_amp,
+        )
+
         self.u_opt = u_opt
         self.s_opt = s_opt
-        self.device = device
-        self.batch_size = batch_size
         self.sde_steps = sde_steps
         self.h = 1.0 / sde_steps
         self.ot_method = ot_method
@@ -113,18 +72,12 @@ class SF2MTrainer(BaseTrainer):
         self.lr_decay = lr_decay
         self.lr_final_ratio = lr_final_ratio
         self.use_ema = use_ema
-        self.seed = seed
         self.sinkhorn_iters = sinkhorn_iters
-
-        self.total_nfes = getattr(self, "total_nfes", 0)  # used by _simulate_trajectory
 
         if num_cache_batches is None:
             num_cache_batches = max(1, len(dataset) // batch_size)
         self.num_cache_batches = num_cache_batches
 
-        # -------------------------------------------------------------
-        # 0. Private RNG streams
-        # -------------------------------------------------------------
         # DataLoader shuffling
         self.shuffle_gen = torch.Generator()
         self.shuffle_gen.manual_seed(self.seed + SeedOffsets.SF2M_SHUFFLE)
@@ -141,126 +94,31 @@ class SF2MTrainer(BaseTrainer):
         self.bridge_gen = torch.Generator(device=self.device)
         self.bridge_gen.manual_seed(self.seed + SeedOffsets.SF2M_BRIDGE_NOISE)
 
-        # -------------------------------------------------------------
-        # 1. Global channels_last & Hardware Settings
-        # -------------------------------------------------------------
-        self.data_shape = tuple(self.dataset[0].shape)
-        is_image = len(self.data_shape) == 3
-        self.memory_format = (
-            torch.channels_last
-            if (self.device.type == "cuda" and is_image)
-            else torch.contiguous_format
-        )
+        self._init_cache_dataloader(SeedOffsets.SF2M_SHUFFLE)
 
-        # if self.device.type == "cuda" and is_image:
-        #     torch.backends.cudnn.benchmark = True
-
-        # -------------------------------------------------------------
-        # 2. Precision & Compilation Settings
-        # ------------------------------------------------------------
-        self.use_amp = use_amp and (self.device.type == "cuda")
+        # Precision & Compilation Settings
         self.u_scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
         self.s_scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
-        self.amp_dtype = torch.float16 if self.device.type == "cuda" else torch.bfloat16
 
-        # -------------------------------------------------------------
-        # 3. Data Pipeline & Probe Batch
-        # -------------------------------------------------------------
-        self.dl = DataLoader(
-            self.dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-            drop_last=True,
-            generator=self.shuffle_gen,
+        # Models, EMA, and Compilation
+        self.u_model_base, self.u_model, self.ema_u, self.u_sampler = self._setup_model(
+            model=u_model,
+            ema_mu=ema_mu,
+            use_ema=use_ema,
+            sigma=sigma,
+            create_sampler=True,
         )
-        self._data_iter = self._repeater(self.dl)
-        self.fixed_probe_batch = self._make_probe_batch()
-
-        # -------------------------------------------------------------
-        # 4. Models, EMA, and Compilation
-        # -------------------------------------------------------------
-        self.u_model_base = u_model.to(device, memory_format=self.memory_format)
-        self.s_model_base = s_model.to(device, memory_format=self.memory_format)
-        self.u_model_base.sigma = sigma
-        self.s_model_base.sigma = sigma
-
-        if self.use_ema:
-            self.ema_u = EMAHelper(mu=ema_mu, device=self.device)
-            self.ema_u.register(self.u_model_base)
-            self.ema_s = EMAHelper(mu=ema_mu, device=self.device)
-            self.ema_s.register(self.s_model_base)
-        else:
-            self.ema_u, self.ema_s = None, None
-
-        self.u_sampler = copy.deepcopy(self.u_model_base)
-        self.s_sampler = copy.deepcopy(self.s_model_base)
-
-        if self.device.type == "cuda":
-            self.u_model = torch.compile(self.u_model_base, mode="reduce-overhead")
-            self.s_model = torch.compile(self.s_model_base, mode="reduce-overhead")
-            self.u_sampler = torch.compile(self.u_sampler, mode="reduce-overhead")
-            self.s_sampler = torch.compile(self.s_sampler, mode="reduce-overhead")
-        else:
-            self.u_model, self.s_model = self.u_model_base, self.s_model_base
-
-    ############ RNG helpers
-
-    @contextmanager
-    def _isolated_global_rng(self, seed: int):
-        """
-        Seed the global CPU/CUDA RNGs for the duration of the block and restore the
-        previous state afterwards. Used around eval_callback, whose Evaluator and
-        model.generate() draw from the global generators: it now sees the same noise
-        every time it runs, and can never shift anybody else's random stream.
-        """
-        devices = []
-        if self.device.type == "cuda":
-            idx = (
-                self.device.index
-                if self.device.index is not None
-                else torch.cuda.current_device()
-            )
-            devices = [idx]
-
-        with torch.random.fork_rng(devices=devices):
-            torch.manual_seed(seed)
-            yield
-
-    def _randn_like(self, ref: torch.Tensor, gen: torch.Generator) -> torch.Tensor:
-        # torch.randn_like has no `generator` argument, so draw explicitly and put the
-        # result in the memory format randn_like would have preserved.
-        return torch.randn(
-            ref.shape, device=ref.device, dtype=ref.dtype, generator=gen
-        ).contiguous(memory_format=self.memory_format)
-
-    def _make_probe_batch(self) -> torch.Tensor:
-        """
-        Fixed batch for parameter-drift tracking. Taken straight from the dataset
-        (first `batch_size` items) instead of iterating a DataLoader: creating a
-        DataLoader iterator draws a base seed from the loader's generator (or from
-        the global one), which would shift the shuffle stream.
-        """
-        n = min(self.batch_size, len(self.dataset))
-        items = [self.dataset[i] for i in range(n)]
-        items = [it[0] if isinstance(it, (list, tuple)) else it for it in items]
-        return torch.stack(items).to(self.device, memory_format=self.memory_format)
-
-    ############ UTILS
-
-    @staticmethod
-    def _repeater(dataloader):
-        while True:
-            for batch in dataloader:
-                yield batch
-
-    def _next_data(self) -> torch.Tensor:
-        batch = next(self._data_iter)
-        if isinstance(batch, (list, tuple)):
-            batch = batch[0]
-        return batch.to(
-            self.device, memory_format=self.memory_format, non_blocking=True
+        self.s_model_base, self.s_model, self.ema_s, self.s_sampler = self._setup_model(
+            model=s_model,
+            ema_mu=ema_mu,
+            use_ema=use_ema,
+            sigma=sigma,
+            create_sampler=True,
         )
 
+    # ------------------------------------------------------------------
+    # COUPLINGS
+    # ------------------------------------------------------------------
     @torch.no_grad()
     def _couple(
         self, x0: torch.Tensor, x1: torch.Tensor
@@ -297,49 +155,22 @@ class SF2MTrainer(BaseTrainer):
         col = torch.multinomial(probs, 1, generator=self.perm_gen).squeeze(1)
         return x0, x1[col]
 
-    ############ Simulation and Cache
+    def _ot_iterator(self):
+        """Infinite generator for online Optimal Transport (Iteration 1)."""
+        while True:
+            x1 = self._next_data()
+            x0 = self._randn_like(x1, self.noise_gen)
+            yield self._couple(x0, x1)
 
+    # ------------------------------------------------------------------
+    # SIMULATION AND CACHE
+    # ------------------------------------------------------------------
     @torch.no_grad()
-    def _simulate_trajectory(
-        self, x_start: torch.Tensor, direction: str
-    ) -> torch.Tensor:
-        x = x_start.clone()
-        h = 1.0 / self.sde_steps
-        for i in range(self.sde_steps):
-            t_val = (i * h) if direction == "b" else (1.0 - i * h)
-            t_val = min(max(t_val, self.eps), 1.0 - self.eps)
-            t = torch.full((x.shape[0], 1), t_val, device=x.device, dtype=x.dtype)
-
-            if hasattr(torch.compiler, "cudagraph_mark_step_begin"):
-                torch.compiler.cudagraph_mark_step_begin()
-
-            with torch.autocast(
-                device_type=self.device.type, dtype=self.amp_dtype, enabled=self.use_amp
-            ):
-                v_val = self.u_sampler(x, t).float()
-                eps_val = self.s_sampler(x, t).float()
-
-            if direction == "b":
-                drift = v_val - self.sigma * math.sqrt(t_val / (1.0 - t_val)) * eps_val
-            else:
-                drift = -v_val - self.sigma * math.sqrt((1.0 - t_val) / t_val) * eps_val
-
-            x = x + h * drift
-            if self.sigma > 0:
-                noise = torch.randn(
-                    x.shape, device=x.device, dtype=x.dtype, generator=self.noise_gen
-                )
-                x = x + self.sigma * math.sqrt(h) * noise
-
-        self.total_nfes += x.shape[0] * self.sde_steps
-        return x
-
-    @torch.no_grad()
-    def _build_cache(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _build_cache(self) -> Iterator[Tuple[torch.Tensor, torch.Tensor]]:
         """
-        Alg. 3, loops >= 2. Half of every cache batch is forward pairs (x0 real data,
-        x1_hat = forward SDE endpoint); the other half is backward pairs (x0_hat = backward SDE
-        endpoint from a fresh prior sample, x1 prior).
+        Alg. 3, loops >= 2. Half of every cache batch is built from real data
+        (x1 = data, x0_hat = backward-in-time SDE endpoint); the other half from fresh prior samples
+        (x0 = prior, x1_hat = SDE endpoint at the data side).
         """
         B = self.batch_size
         n_total = self.num_cache_batches * B
@@ -350,21 +181,29 @@ class SF2MTrainer(BaseTrainer):
         )
         X1 = torch.empty_like(X0)
 
-        # load the weights used for simulation (EMA if available)
+        # Load the weights used for simulation (EMA if available)
+        u_s = getattr(self.u_sampler, "_orig_mod", self.u_sampler)
+        s_s = getattr(self.s_sampler, "_orig_mod", self.s_sampler)
         if self.use_ema:
-            self.ema_u.copy_to(getattr(self.u_sampler, "_orig_mod", self.u_sampler))
-            self.ema_s.copy_to(getattr(self.s_sampler, "_orig_mod", self.s_sampler))
+            self.ema_u.copy_to(u_s)
+            self.ema_s.copy_to(s_s)
         else:
-            getattr(self.u_sampler, "_orig_mod", self.u_sampler).load_state_dict(
-                self.u_model_base.state_dict()
-            )
-            getattr(self.s_sampler, "_orig_mod", self.s_sampler).load_state_dict(
-                self.s_model_base.state_dict()
-            )
+            u_s.load_state_dict(self.u_model_base.state_dict())
+            s_s.load_state_dict(self.s_model_base.state_dict())
         self.u_sampler.eval()
         self.s_sampler.eval()
 
-        half = B // 2
+        self.sampler_engine = EulerSampler(
+            model_type="sf2m", steps=self.sde_steps, use_amp=self.use_amp
+        )
+        self.sampler_b = SF2MInferenceWrapper(
+            self.u_sampler, self.s_sampler, self.sigma, direction="b", eps=self.eps
+        )
+        self.sampler_f = SF2MInferenceWrapper(
+            self.u_sampler, self.s_sampler, self.sigma, direction="f", eps=self.eps
+        )
+
+        idx = 0
         for k in tqdm(
             range(self.num_cache_batches),
             ascii=True,
@@ -372,38 +211,51 @@ class SF2MTrainer(BaseTrainer):
             desc="Building SF2M Cache",
         ):
             x1_real = self._next_data()
+
+            # Dynamically calculate sizes based on actual batch received
+            b_size = x1_real.shape[0]
+            half = b_size // 2
+
+            # data -> prior
             x1_b = x1_real[:half]
-            x0_b = self._simulate_trajectory(x1_b, direction="f")  # Reverse to Noise
+            x0_b = self.sampler_engine.generate(
+                model=self.sampler_f,
+                x_init=x1_b,
+                batch_size=x1_b.shape[0],
+                step_seed=self.noise_gen,
+                drop_last_noise=False,
+                verbose=False,
+            )
 
-            x0_f = self._randn_like(x1_real[: B - half], self.noise_gen)
-            x1_f = self._simulate_trajectory(x0_f, direction="b")  # Forward to Data
+            # prior -> data
+            x0_f = self._randn_like(x1_real[: b_size - half], self.noise_gen)
+            x1_f = self.sampler_engine.generate(
+                model=self.sampler_b,
+                x_init=x0_f,
+                batch_size=x0_f.shape[0],
+                step_seed=self.noise_gen,
+                drop_last_noise=False,
+                verbose=False,
+            )
 
-            X0[k * B : (k + 1) * B] = torch.cat([x0_b, x0_f], dim=0)
-            X1[k * B : (k + 1) * B] = torch.cat([x1_b, x1_f], dim=0)
+            X0[idx : idx + b_size] = torch.cat([x0_b, x0_f], dim=0)
+            X1[idx : idx + b_size] = torch.cat([x1_b, x1_f], dim=0)
+            idx += b_size
 
         if not (torch.isfinite(X0).all() and torch.isfinite(X1).all()):
             raise RuntimeError(
                 "Non-finite values in the SF2M cache: the simulated SDE diverged."
             )
 
+        # Save to the BaseTrainer state for the probe (sliced to actual size)
+        self._probe_tensors = (X0[:idx], X1[:idx])
+
+        # BaseTrainer's generic parallel-tensor iterator (uses self.perm_gen)
         return self._cache_iterator(X0, X1)
 
-    def _cache_iterator(self, X0: torch.Tensor, X1: torch.Tensor):
-        """Fast infinite minibatch iterator over GPU tensors (matches IPF)."""
-        n = X0.shape[0]
-        while True:
-            perm = torch.randperm(n, device=X0.device, generator=self.perm_gen)
-            for j in range(0, n - self.batch_size + 1, self.batch_size):
-                idx = perm[j : j + self.batch_size]
-                yield X0[idx], X1[idx]
-
-    def _ot_iterator(self):
-        """Infinite generator for online Optimal Transport (Iteration 1)."""
-        while True:
-            x1 = self._next_data()
-            x0 = self._randn_like(x1, self.noise_gen)
-            yield self._couple(x0, x1)
-
+    # ------------------------------------------------------------------
+    # TRAINING LOOP
+    # ------------------------------------------------------------------
     def _train_inner_loop(
         self,
         cache_iter: Iterator[Tuple[torch.Tensor, torch.Tensor]],
@@ -435,12 +287,16 @@ class SF2MTrainer(BaseTrainer):
                 * (1.0 - 2.0 * self.eps)
                 + self.eps
             )
-            t_e = t.view(B, *([1] * (x_noise.ndim - 1)))
-
-            mu_t = t_e * x_data + (1.0 - t_e) * x_noise
-            sigma_t = self.sigma * torch.sqrt(t_e * (1.0 - t_e))
-            noise = self._randn_like(x_noise, self.bridge_gen)
-            x_t = (mu_t + sigma_t * noise).contiguous(memory_format=self.memory_format)
+            x_t, targets, t_net = ConditionalVectorField.get_interpolant_and_target(
+                model_type="sf2m",
+                z_batch=x_data,
+                t=t,
+                gen=self.bridge_gen,
+                x0_batch=x_noise,
+                sigma=self.sigma,
+                memory_format=self.memory_format,
+            )
+            v_target, eps_target = targets
 
             self.u_opt.zero_grad(set_to_none=True)
             self.s_opt.zero_grad(set_to_none=True)
@@ -454,15 +310,9 @@ class SF2MTrainer(BaseTrainer):
                 v_pred = self.u_model(x_t, t)
                 eps_pred = self.s_model(x_t, t)
 
-            # losses in fp32
-            v_pred, eps_pred = v_pred.float(), eps_pred.float()
-
-            # Unscaled Targets
-            v_target = x_data - x_noise
-            eps_target = noise
-
-            loss_v = torch.mean((v_pred - v_target) ** 2)
-            loss_eps = torch.mean((eps_pred - eps_target) ** 2)
+            loss_v, loss_eps = ConditionalVectorField.compute_sf2m_loss(
+                v_pred, eps_pred, v_target, eps_target
+            )
             loss = loss_v + loss_eps
 
             if self.use_amp:
@@ -472,6 +322,14 @@ class SF2MTrainer(BaseTrainer):
                 self.s_scaler.unscale_(self.s_opt)
             else:
                 loss.backward()
+
+            self.log_inner_step(
+                model=self.u_model_base,
+                loss=loss.detach(),
+                optimizer=self.u_opt,
+                phase="sf2m",
+                ipf_iter=outer_idx,
+            )
 
             if self.grad_clip:
                 torch.nn.utils.clip_grad_norm_(
@@ -497,15 +355,6 @@ class SF2MTrainer(BaseTrainer):
             tot_u += loss_v.detach()
             tot_s += loss_eps.detach()
 
-            if it % 50 == 0:
-                self.log_inner_step(
-                    self.u_model,
-                    loss.detach(),
-                    self.u_opt,
-                    phase="sf2m",
-                    ipf_iter=outer_idx,
-                )
-
         if self.lr_decay:
             for g, lr0 in zip(self.u_opt.param_groups, u_base_lrs):
                 g["lr"] = lr0
@@ -528,17 +377,14 @@ class SF2MTrainer(BaseTrainer):
         u_eval = self.ema_u.model if self.use_ema else self.u_model_base
         s_eval = self.ema_s.model if self.use_ema else self.s_model_base
 
-        for l in range(1, outer_iterations + 1):
-            self.logger.debug(f"\n--- SF2M Outer Iteration {l}/{outer_iterations} ---")
-            phase_start = time.time()
+        for n in range(1, outer_iterations + 1):
+            self.logger.debug(f"\n--- SF2M Outer Iteration {n}/{outer_iterations} ---")
+            nfes_before, phase_start = self.total_nfes, time.time()
 
-            if l == 1:
-                cache_iter = self._ot_iterator()
-            else:
-                cache_iter = self._build_cache()
+            cache_iter = self._ot_iterator() if n == 1 else self._build_cache()
 
             loss, loss_u, loss_s = self._train_inner_loop(
-                cache_iter, inner_iterations, l
+                cache_iter, inner_iterations, n
             )
             del cache_iter
 
@@ -550,40 +396,32 @@ class SF2MTrainer(BaseTrainer):
             }
 
             # Run evaluation condition
-            run_eval = (
+            _run_eval = (
                 eval_callback is not None
                 and eval_per is not None
-                and (l % eval_per == 0)
+                and (n % eval_per == 0)
             )
-
-            if run_eval:
-                u_eval.eval()
+            if _run_eval:
                 s_eval.eval()
+                u_eval.eval()
                 with self._isolated_global_rng(self.seed + SeedOffsets.SF2M_EVAL):
                     wrapper = SF2MInferenceWrapper(
                         u_eval, s_eval, self.sigma, direction="b", eps=self.eps
                     )
                     metrics.update(eval_callback(wrapper, direction="b"))
 
-            self.log_phase_end("sf2m", l, metrics)
-            self.track_parameter_drift(self.u_model_base, ipf_iter=l)
+            self.log_phase_end("sf2m", n, metrics)
+            self.track_parameter_drift(self.u_model_base, ipf_iter=n)
 
-            if not run_eval:
-                qual_str = ""
-            elif "FID" in metrics:
-                qual_str = (
-                    f"B-FID: {metrics['FID']:.3f} | "
-                    f"B-Prec: {metrics['Precision']:.3f} | "
-                    f"B-Rec: {metrics['Recall']:.3f}"
-                )
-            else:
-                qual_str = f"B-MMD: {metrics.get('eval_MMD', float('nan')):.4f}"
+            qual_str = self._format_eval_str(metrics, _run_eval)
+            self.logger.info(f"Outer Loop {n} | Loss: {loss:.4f} | {qual_str}")
 
-            self.logger.info(f"Outer Loop {l} | Loss: {loss:.4f} | {qual_str}")
-
-            if save_per and save_path and (l % save_per == 0):
-                save_model(u_eval, f"{save_path}/SF2M_u_checkpoint_{l}.pth")
-                save_model(s_eval, f"{save_path}/SF2M_s_checkpoint_{l}.pth")
+            _save_model = (
+                save_per is not None and save_path is not None and (n % save_per == 0)
+            )
+            if _save_model:
+                save_model(u_eval, f"{save_path}/SF2M_u_checkpoint_{n}.pth")
+                save_model(s_eval, f"{save_path}/SF2M_s_checkpoint_{n}.pth")
 
         self.logger.debug(("-" * 100))
 

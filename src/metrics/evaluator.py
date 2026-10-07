@@ -164,7 +164,7 @@ class Evaluator:
 
         if direction == "b":
             # Validation & Simulation
-            loss = self._compute_validation_loss(model)
+            loss = self._compute_validation_loss(model, direction, use_amp)
 
             # Backward Chain: Prior -> Data
             gen_start = time.time()
@@ -238,13 +238,29 @@ class Evaluator:
             self._x_test = torch.cat([z.cpu() for z in self.dl], dim=0)
         return self._x_test
 
-    def _compute_validation_loss(self, model: nn.Module) -> float:
+    def _compute_validation_loss(
+        self, model: nn.Module, direction: str, use_amp: bool
+    ) -> float:
         """Calculates regression health against straight-line/SDE paths and extracts targets."""
 
         gen = self._noise_gen
         # Re-seed on every call: each evaluation sees the exact same (t, noise) draws,
         # so eval_loss only changes when the weights change.
         gen.manual_seed(self._val_seed)
+
+        # Sniff model attributes safely
+        model_type = getattr(model, "model_type", "flow_m")
+        sigma = getattr(model, "sigma", 1.0)
+        is_sf2m = model_type == "sf2m"
+
+        # --- IPF Proxy Resolution ---
+        # The true IPF loss requires running a full SDE simulation of the opposite network
+        # to generate `drift_next`. To avoid massive computational overhead in the Evaluator,
+        # we proxy IPF's validation health against the standard independent SDE targets.
+        eval_model_type = "sde" if model_type == "ipf" else model_type
+
+        # Define amp_dtype locally based on the device
+        amp_dtype = torch.float16 if self.device.type == "cuda" else torch.bfloat16
 
         total_loss = 0.0
         with torch.inference_mode():
@@ -259,26 +275,57 @@ class Evaluator:
                 # Sample time uniformly
                 t = torch.rand(B, 1, device=self.device, generator=gen) * 0.999
 
-                x_t, target_u, t_expand = (
+                # Generate x0 (noise) for methods that require an explicit start point
+                x0_batch = None
+                if eval_model_type in ["imf", "sf2m"]:
+                    x0_batch = torch.randn(
+                        z_batch.shape,
+                        device=self.device,
+                        dtype=z_batch.dtype,
+                        generator=gen,
+                    ).contiguous(memory_format=self.memory_format)
+
+                x_t, target_u, t_net = (
                     ConditionalVectorField.get_interpolant_and_target(
-                        model_type=model.model_type,
+                        model_type=eval_model_type,
                         z_batch=z_batch,
                         t=t,
                         gen=gen,
                         memory_format=self.memory_format,
+                        sigma=sigma,
+                        direction=direction,
+                        x0_batch=x0_batch,
                     )
                 )
 
-                # Model predicts the vector field
-                pred_u = model(x_t, t)
+                if hasattr(torch.compiler, "cudagraph_mark_step_begin"):
+                    torch.compiler.cudagraph_mark_step_begin()
 
-                # Calculate Loss based on model dynamics
-                batch_loss = ConditionalVectorField.compute_loss(
-                    model_type=model.model_type,
-                    pred_u=pred_u,
-                    target_u=target_u,
-                    t_expand=t_expand,
-                )
+                with torch.autocast(
+                    device_type=self.device.type,
+                    dtype=amp_dtype,
+                    enabled=use_amp,
+                ):
+                    if is_sf2m:
+                        # SF2M wrapper holds both networks; we query them directly
+                        v_pred = model.u(x_t, t_net)
+                        eps_pred = model.s(x_t, t_net)
+                        v_target, eps_target = target_u
+
+                        loss_v, loss_eps = ConditionalVectorField.compute_sf2m_loss(
+                            v_pred, eps_pred, v_target, eps_target
+                        )
+                        batch_loss = loss_v + loss_eps
+                    else:
+                        # Standard single-network models (SDE, Flow Matching, Minibatch, IMF)
+                        pred_u = model(x_t, t_net)
+                        batch_loss = ConditionalVectorField.compute_loss(
+                            model_type=eval_model_type,
+                            pred_u=pred_u,
+                            target_u=target_u,
+                            t_net=t_net,
+                            sigma=sigma,
+                        )
 
                 total_loss += batch_loss.item()
 

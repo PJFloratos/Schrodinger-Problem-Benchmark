@@ -1,5 +1,7 @@
 import torch
-from typing import Tuple
+
+import math
+from typing import Tuple, Optional
 
 
 class ConditionalVectorField:
@@ -35,6 +37,41 @@ class ConditionalVectorField:
 
         return row_ind, col_ind
 
+    # =========================================================================
+    # IPF / DSB Specific Math
+    # =========================================================================
+
+    @staticmethod
+    def get_dsb_target(
+        drift_next: torch.Tensor, z: torch.Tensor, h: float, sigma: float = 1.0
+    ) -> torch.Tensor:
+        """
+        Computes the Diffusion Schrodinger Bridge regression target
+        for the opposite network in IPF.
+        """
+        return -drift_next - (sigma * z) / math.sqrt(h)
+
+    # =========================================================================
+    # SF2M Specific Math
+    # =========================================================================
+
+    @staticmethod
+    def compute_sf2m_loss(
+        v_pred: torch.Tensor,
+        eps_pred: torch.Tensor,
+        v_target: torch.Tensor,
+        eps_target: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Separate fp32 MSEs for the flow and noise heads (each has its own optimizer/scaler)."""
+        loss_v = torch.mean((v_pred.float() - v_target) ** 2)
+        loss_eps = torch.mean((eps_pred.float() - eps_target) ** 2)
+
+        return loss_v, loss_eps
+
+    # =========================================================================
+    # Closed-Form Interpolants
+    # =========================================================================
+
     @classmethod
     def get_interpolant_and_target(
         cls,
@@ -43,6 +80,10 @@ class ConditionalVectorField:
         t: torch.Tensor,
         gen: torch.Generator,
         memory_format=torch.contiguous_format,
+        sigma: Optional[int] = None,
+        direction: Optional[str] = None,
+        x0_batch: Optional[torch.Tensor] = None,
+        eps: Optional[float] = 1e-4,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Computes (x_t, target_u, t_expand) given endpoint batch z_batch (data) and time t.
@@ -79,23 +120,55 @@ class ConditionalVectorField:
             x_t = t_expand * z_batch + (1.0 - t_expand) * x_0
             target_u = z_batch - x_0
 
+        elif model_type == "imf":
+            # For IMF, z_batch acts as x1 (target endpoint). x0_batch is the source.
+            if x0_batch is None:
+                raise ValueError("IMF model requires x0_batch explicitly passed.")
+
+            z = cls._randn_like(z_batch, gen, memory_format)
+            x_t = (
+                (1.0 - t_expand) * x0_batch
+                + t_expand * z_batch
+                + sigma * torch.sqrt(t_expand * (1.0 - t_expand)) * z
+            )
+
+            if direction == "f":
+                target_u = (z_batch - x0_batch) - sigma * torch.sqrt(
+                    t_expand / (1.0 - t_expand)
+                ) * z
+                t_net = t_expand
+            else:
+                target_u = (
+                    -(z_batch - x0_batch)
+                    - sigma * torch.sqrt((1.0 - t_expand) / t_expand) * z
+                )
+                t_net = (
+                    1.0 - t_expand
+                )  # The backward network processes the state at 1 - t
+
+            return x_t, target_u, t_net
+
         elif model_type == "sf2m":
-            # x_0 = Noise, z_batch = Data. Generation is t=0 (Noise) -> t=1 (Data)
-            x_0 = cls._randn_like(z_batch, gen, memory_format)
-            eps = cls._randn_like(z_batch, gen, memory_format)
-            sigma = 1.0
+            # For SF2M, z_batch = Data, x0_batch = Noise.
+            if x0_batch is None:
+                raise ValueError("SF2M model requires x0_batch explicitly passed.")
+            if sigma is None:
+                sigma = 1.0
+
+            eps_noise = cls._randn_like(z_batch, gen, memory_format)
 
             t_safe = t_expand.clamp(1e-4, 1.0 - 1e-4)
             sigma_t = sigma * torch.sqrt(t_safe * (1.0 - t_safe))
 
             # Reparameterized conditional sample
-            x_t = t_safe * z_batch + (1.0 - t_safe) * x_0 + sigma_t * eps
+            x_t = t_safe * z_batch + (1.0 - t_safe) * x0_batch + sigma_t * eps_noise
 
-            # Evaluator tests the combined forward SDE drift (noise -> data): u_t^o + 0.5 * sigma^2 * s_t
-            # With the new parameterization: v - sigma * sqrt(t/(1-t)) * eps
-            target_u = (z_batch - x_0) - sigma * torch.sqrt(
-                t_safe / (1.0 - t_safe)
-            ) * eps
+            # SF2M models the velocity and the noise components separately
+            v_target = z_batch - x0_batch
+            eps_target = eps_noise
+
+            # Pack targets together
+            target_u = (v_target, eps_target)
 
         else:
             raise ValueError(f"Unknown model_type: {model_type}")
@@ -107,10 +180,26 @@ class ConditionalVectorField:
         model_type: str,
         pred_u: torch.Tensor,
         target_u: torch.Tensor,
-        t_expand: torch.Tensor,
+        t_net: torch.Tensor,
+        h: Optional[float] = None,
+        sigma: float = 1.0,
     ) -> torch.Tensor:
         """Computes matching objective (time-weighted for SDE/OT, standard MSE for Flow Matching)."""
-        if model_type in ["sde", "minibatch"]:
-            return torch.mean((1.0 - t_expand) * (pred_u - target_u) ** 2)
 
-        return torch.mean((pred_u - target_u) ** 2)
+        raw_loss = (pred_u - target_u) ** 2
+
+        if model_type in ["sde", "minibatch"]:
+            return torch.mean((1.0 - t_net) * raw_loss)
+
+        elif model_type == "ipf":
+            if h is None:
+                raise ValueError("IPF loss requires step size 'h' to be passed.")
+            return torch.mean(raw_loss) * h
+
+        elif model_type == "imf":
+            # The mathematical weight for the Brownian bridge simplifies perfectly
+            # to the exact same equation for BOTH directions when mapped to t_net!
+            weight = 1.0 / (1.0 + (sigma**2 * t_net) / (1.0 - t_net))
+            return torch.mean(weight * raw_loss)
+
+        return torch.mean(raw_loss)

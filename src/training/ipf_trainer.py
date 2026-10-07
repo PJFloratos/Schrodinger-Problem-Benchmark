@@ -1,5 +1,7 @@
 from src.training.base_trainer import BaseTrainer
-from src.models.ema import EMAHelper
+from src.core.dynamics import ConditionalVectorField
+from src.core.solver import EulerSampler
+from src.models.components import EMAHelper
 from src.utils.seed import SeedOffsets
 from src.utils import save_model, text_logger
 
@@ -12,7 +14,7 @@ import math
 import time
 from contextlib import contextmanager
 from tqdm import tqdm
-from typing import Union, Any, Optional
+from typing import Union, Any, Optional, Callable
 
 
 class IPFTrainer(BaseTrainer):
@@ -42,6 +44,7 @@ class IPFTrainer(BaseTrainer):
         sde_steps: int = 20,
         num_cache_batches: int = 10,  # Number of dataset batches to cache per iteration
         refresh_every: int = 500,  # regenerate the cache every N gradient steps
+        sigma: float = 1.0,
         grad_clip: float = 2.0,
         ema_mu: float = 0.999,
         lr_decay: bool = True,  # cosine decay inside each training phase
@@ -49,28 +52,28 @@ class IPFTrainer(BaseTrainer):
         use_amp: bool = True,
         use_ema: bool = True,
     ):
-        super().__init__(device=device, metric_logger=metric_logger)
+        super().__init__(
+            dataset=dataset,
+            batch_size=batch_size,
+            seed=seed,
+            device=device,
+            metric_logger=metric_logger,
+            use_amp=use_amp,
+        )
 
-        self.dataset = dataset
         self.f_opt = forward_opt
         self.b_opt = backward_opt
-        self.seed = seed
-        self.device = device
-        self.batch_size = batch_size
         self.sde_steps = sde_steps
         self.h = 1.0 / sde_steps
         self.num_cache_batches = num_cache_batches
         self.refresh_every = refresh_every
+        self.sigma = sigma
         self.grad_clip = grad_clip
         self.lr_decay = lr_decay
         self.lr_final_ratio = lr_final_ratio
         self.criterion = nn.MSELoss()
-        self.data_shape = tuple(self.dataset[0].shape)
         self.use_ema = use_ema
 
-        # -------------------------------------------------------------
-        # 0. Private RNG streams
-        # -------------------------------------------------------------
         # DataLoader shuffling (must be a CPU generator).
         self.shuffle_gen = torch.Generator()
         self.shuffle_gen.manual_seed(self.seed + SeedOffsets.IPF_SHUFFLE)
@@ -83,149 +86,43 @@ class IPFTrainer(BaseTrainer):
         self.perm_gen = torch.Generator(device=self.device)
         self.perm_gen.manual_seed(self.seed + SeedOffsets.IPF_CACHE_PERM)
 
-        # -------------------------------------------------------------
-        # 1. Global channels_last & Hardware Settings
-        # -------------------------------------------------------------
-        is_image = len(self.data_shape) == 3  # (C, H, W)
-        self.memory_format = (
-            torch.channels_last
-            if (self.device.type == "cuda" and is_image)
-            else torch.contiguous_format
-        )
+        self._init_cache_dataloader(SeedOffsets.IPF_SHUFFLE)
 
-        # if self.device.type == "cuda" and is_image:
-        #     torch.backends.cudnn.benchmark = True
+        # Cache-staleness probe: re-seeded at the start of every probe, so the probe before
+        # and after a refresh sees the exact same (index, t, z) draws.
+        self.probe_gen = torch.Generator(device=self.device)
 
-        # -------------------------------------------------------------
-        # 2. Precision & Compilation Settings
-        # -------------------------------------------------------------
-        self.use_amp = use_amp and (self.device.type == "cuda")
-        # One scaler per network: the two nets have different gradient statistics,
-        # so they should not share a loss-scale that adapts to the other's overflows.
+        # Amp scalers for the two models
         self.f_scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
         self.b_scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
-        self.amp_dtype = torch.float16 if self.device.type == "cuda" else torch.bfloat16
 
-        # -------------------------------------------------------------
-        # 3. Data Pipeline & Probe Batch
-        # -------------------------------------------------------------
-        self.dl = DataLoader(
-            self.dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-            drop_last=True,
-            generator=self.shuffle_gen,
+        # Model setup
+        self.f_model_base, self.f_model, self.f_ema, self.f_sampler = self._setup_model(
+            model=forward_model,
+            ema_mu=ema_mu,
+            use_ema=use_ema,
+            sigma=self.sigma,
+            create_sampler=True,
         )
-        self._data_iter = self._repeater(self.dl)
-        self.fixed_probe_batch = self._make_probe_batch()
+        self.b_model_base, self.b_model, self.b_ema, self.b_sampler = self._setup_model(
+            model=backward_model,
+            ema_mu=ema_mu,
+            use_ema=use_ema,
+            sigma=self.sigma,
+            create_sampler=True,
+        )
 
-        # -------------------------------------------------------------
-        # 4. Models, EMA, and Compilation
-        # -------------------------------------------------------------
-        # Keep base models in self.memory_format
-        self.f_model_base = forward_model.to(device, memory_format=self.memory_format)
-        self.b_model_base = backward_model.to(device, memory_format=self.memory_format)
-
-        if self.use_ema:
-            # Initialize and register EMA trackers for both networks
-            self.ema_f = EMAHelper(mu=ema_mu, device=self.device)
-            self.ema_f.register(self.f_model_base)
-            self.ema_b = EMAHelper(mu=ema_mu, device=self.device)
-            self.ema_b.register(self.b_model_base)
-        else:
-            self.ema_f, self.ema_b = None, None
-
-        # Persistent samplers for cache generation
-        self.f_sampler = copy.deepcopy(self.f_model_base)
-        self.b_sampler = copy.deepcopy(self.b_model_base)
-
-        self.use_compile = self.device.type == "cuda"
-        if self.use_compile:
-            self.f_model = torch.compile(self.f_model_base, mode="reduce-overhead")
-            self.b_model = torch.compile(self.b_model_base, mode="reduce-overhead")
-            self.f_sampler = torch.compile(self.f_sampler, mode="reduce-overhead")
-            self.b_sampler = torch.compile(self.b_sampler, mode="reduce-overhead")
-        else:
-            self.f_model = self.f_model_base
-            self.b_model = self.b_model_base
-
-    ############ Reference Process
-
+    # ------------------------------------------------------------------
+    # Reference Process
+    # ------------------------------------------------------------------
     @staticmethod
     def reference_drift(x: torch.Tensor) -> torch.Tensor:
         """Standard Brownian Motion reference process (zero drift)."""
         return torch.zeros_like(x)
 
-    ############ RNG helpers
-
-    @contextmanager
-    def _isolated_global_rng(self, seed: int):
-        """
-        Seed the global CPU/CUDA RNGs for the duration of the block and restore the
-        previous state afterwards. Used around eval_callback, whose Evaluator and
-        model.generate() draw from the global generators: it now sees the same noise
-        every time it runs, and can never shift anybody else's random stream.
-        """
-        devices = []
-        if self.device.type == "cuda":
-            idx = (
-                self.device.index
-                if self.device.index is not None
-                else torch.cuda.current_device()
-            )
-            devices = [idx]
-
-        with torch.random.fork_rng(devices=devices):
-            torch.manual_seed(seed)
-            yield
-
-    def _randn_like(self, ref: torch.Tensor, gen: torch.Generator) -> torch.Tensor:
-        # torch.randn_like has no `generator` argument, so draw explicitly and put the
-        # result in the memory format randn_like would have preserved.
-        return torch.randn(
-            ref.shape, device=ref.device, dtype=ref.dtype, generator=gen
-        ).contiguous(memory_format=self.memory_format)
-
-    ############ UTILS
-
-    @staticmethod
-    def _repeater(dataloader):
-        """Infinite generator to continuously yield batches (mimics DSB repeater)."""
-        while True:
-            for batch in dataloader:
-                yield batch
-
-    def _next_data(self) -> torch.Tensor:
-        batch = next(self._data_iter)
-        if isinstance(batch, (list, tuple)):
-            batch = batch[0]
-        return batch.to(
-            self.device, memory_format=self.memory_format, non_blocking=True
-        )
-
-    def _make_probe_batch(self) -> torch.Tensor:
-        """
-        Fixed batch for parameter-drift tracking. Taken straight from the dataset
-        (first `batch_size` items) instead of iterating a DataLoader: creating a
-        DataLoader iterator draws a base seed from the loader's generator (or from
-        the global one), which would shift the shuffle stream.
-        """
-        n = min(self.batch_size, len(self.dataset))
-        items = [self.dataset[i] for i in range(n)]
-        items = [it[0] if isinstance(it, (list, tuple)) else it for it in items]
-        return torch.stack(items).to(self.device, memory_format=self.memory_format)
-
-    def _cache_iterator(self, X, T, U):
-        """Fast infinite minibatch iterator over GPU tensors (no per-item DataLoader overhead)."""
-        n = X.shape[0]
-        while True:
-            perm = torch.randperm(n, device=X.device, generator=self.perm_gen)
-            for j in range(0, n - self.batch_size + 1, self.batch_size):
-                idx = perm[j : j + self.batch_size]
-                yield X[idx], T[idx], U[idx]
-
-    ############ CACHE GENERATRION
-
+    # ------------------------------------------------------------------
+    # CACHE GENERATRION
+    # ------------------------------------------------------------------
     @torch.no_grad()
     def _simulate_and_cache(
         self,
@@ -257,7 +154,7 @@ class IPFTrainer(BaseTrainer):
                 )
             sampler.eval()
 
-        def get_drift(x, t):
+        def _get_drift(x, t):
             if use_reference:
                 return IPFTrainer.reference_drift(x)
 
@@ -311,12 +208,18 @@ class IPFTrainer(BaseTrainer):
                     (b_size, 1), 1.0 - (i + 1) * self.h, device=self.device
                 )
 
-                drift = get_drift(x, t_now)
+                drift = _get_drift(x, t_now)
                 z = self._randn_like(x, self.noise_gen)
-                x_next = x + self.h * drift + math.sqrt(self.h) * z
 
-                drift_next = get_drift(x_next, t_now)
-                target = -drift_next - z / math.sqrt(self.h)
+                x_next = EulerSampler.euler_maruyama_step(
+                    x, drift, self.h, z, sigma=self.sigma
+                )
+
+                drift_next = _get_drift(x_next, t_now)
+
+                target = ConditionalVectorField.get_dsb_target(
+                    drift_next, z, self.h, sigma=self.sigma
+                )
 
                 # The trained network is queried at x_{k+1}, at the forward time of x_{k+1}.
                 X_cache[idx : idx + b_size] = x_next
@@ -325,34 +228,38 @@ class IPFTrainer(BaseTrainer):
                 x = x_next
                 idx += b_size
 
+        # Save to the BaseTrainer state for the probe!
+        self._probe_tensors = (X_cache[:idx], T_cache[:idx], U_cache[:idx])
+
         return self._cache_iterator(X_cache, T_cache, U_cache)
 
-    ############ TRAINING
-
+    # ------------------------------------------------------------------
+    # TRAINING LOOP
+    # ------------------------------------------------------------------
     def _train_cache(
         self,
         target_model: nn.Module,
         opt: torch.optim.Optimizer,
         ema_helper: EMAHelper,
-        make_cache,
-        num_iter: int,
+        make_cache: Callable,
         direction: str,
+        num_iter: int,
         ipf_iter: int,
     ) -> float:
         target_model.train()
         scaler = self.b_scaler if direction == "b" else self.f_scaler
+        base_lrs = [g["lr"] for g in opt.param_groups]
 
         cache_iter = make_cache()
-        total_loss = torch.tensor(0.0, device=self.device)
-        base_lrs = [g["lr"] for g in opt.param_groups]
-        prev_loss_val = None
-
         if direction == "f":
             phase = "forward"
             desc = "Training Forward Model"
         else:
             phase = "backward"
             desc = "Training Backward Model"
+
+        total_loss = torch.tensor(0.0, device=self.device)
+        prev_loss_val = None
 
         for it in tqdm(range(num_iter), ascii=True, desc=desc):
             if self.lr_decay:
@@ -361,12 +268,13 @@ class IPFTrainer(BaseTrainer):
                 for g, lr0 in zip(opt.param_groups, base_lrs):
                     g["lr"] = lr0 * scale
 
-            refreshing = (
-                bool(self.refresh_every) and it > 0 and it % self.refresh_every == 0
-            )
-
-            if refreshing:
-                cache_iter = make_cache()  # fresh trajectories, old cache is freed
+            if it > 0 and self.refresh_every and it % self.refresh_every == 0:
+                pre_loss = self._probe_loss(target_model, "ipf", phase)
+                cache_iter = make_cache()
+                post_loss = self._probe_loss(target_model, "ipf", phase)
+                self.track_cache_staleness(
+                    pre_loss, post_loss, self.total_gradient_steps
+                )
 
             x_batch, t_batch, u_batch = next(cache_iter)
             opt.zero_grad(set_to_none=True)
@@ -378,15 +286,14 @@ class IPFTrainer(BaseTrainer):
                 device_type=self.device.type, dtype=self.amp_dtype, enabled=self.use_amp
             ):
                 pred_u = target_model(x_batch, t_batch)
-                mse = self.criterion(pred_u, u_batch)
-
-            # On a refresh step this batch comes from the brand-new cache.
-            if refreshing and prev_loss_val is not None:
-                self.track_cache_staleness(
-                    prev_loss_val, mse.item(), self.total_gradient_steps
+                loss = ConditionalVectorField.compute_loss(
+                    model_type="ipf",
+                    pred_u=pred_u,
+                    target_u=u_batch,
+                    t_net=t_batch,
+                    h=self.h,
+                    sigma=self.sigma,
                 )
-
-            loss = self.h * mse
 
             if self.use_amp:
                 scaler.scale(loss).backward()
@@ -434,8 +341,8 @@ class IPFTrainer(BaseTrainer):
         eval_callback: Optional[callable] = None,
     ):
         # Models to evaluate/save: the EMA copies if enabled, else the live base models
-        f_eval = self.ema_f.model if self.use_ema else self.f_model_base
-        b_eval = self.ema_b.model if self.use_ema else self.b_model_base
+        f_eval = self.f_ema.model if self.use_ema else self.f_model_base
+        b_eval = self.b_ema.model if self.use_ema else self.b_model_base
 
         for n in range(1, ipf_iterations + 1):
             IPFTrainer.logger.debug(f"\n--- IPF Iteration {n}/{ipf_iterations} ---")
@@ -447,13 +354,13 @@ class IPFTrainer(BaseTrainer):
             b_loss = self._train_cache(
                 self.b_model,
                 self.b_opt,
-                self.ema_b,
+                self.b_ema,
                 lambda: self._simulate_and_cache(
-                    self.f_model_base, self.ema_f, self.f_sampler, "f", n
+                    self.f_model_base, self.f_ema, self.f_sampler, "f", n
                 ),
+                "b",
                 inner_iterations,
-                direction="b",
-                ipf_iter=n,
+                n,
             )
             b_time = time.time() - phase_start
 
@@ -469,30 +376,19 @@ class IPFTrainer(BaseTrainer):
             }
 
             # Run evaluation condition
-            run_eval = False
-            if eval_callback is not None:
-                if eval_per is not None and (n % eval_per == 0):
-                    run_eval = True
-
-            if run_eval:
+            _run_eval = (
+                eval_callback is not None
+                and eval_per is not None
+                and (n % eval_per == 0)
+            )
+            if _run_eval:
                 with self._isolated_global_rng(self.seed + SeedOffsets.IPF_EVAL):
                     # Trigger the evaluator purely as a callback
                     b_metrics.update(eval_callback(b_eval, direction="b"))
 
             self.log_phase_end("backward", n, b_metrics)
 
-            # Dynamically format the log string based on whether evaluation ran
-            if not run_eval:
-                qual_str = ""
-            elif "FID" in b_metrics:
-                qual_str = (
-                    f"B-FID: {b_metrics['FID']:.3f} | "
-                    f"B-Prec: {b_metrics['Precision']:.3f} | "
-                    f"B-Rec: {b_metrics['Recall']:.3f}"
-                )
-            else:
-                qual_str = f"B-MMD: {b_metrics.get('eval_MMD', float('nan')):.4f}"
-
+            qual_str = self._format_eval_str(b_metrics, _run_eval, prefix="B-")
             self.logger.info(
                 f"Iteration {n} (Backward) | B-Loss: {b_loss:.4f} | {qual_str}"
             )
@@ -504,13 +400,13 @@ class IPFTrainer(BaseTrainer):
             f_loss = self._train_cache(
                 self.f_model,
                 self.f_opt,
-                self.ema_f,
+                self.f_ema,
                 lambda: self._simulate_and_cache(
-                    self.b_model_base, self.ema_b, self.b_sampler, "b", n
+                    self.b_model_base, self.b_ema, self.b_sampler, "b", n
                 ),
+                "f",
                 inner_iterations,
-                direction="f",
-                ipf_iter=n,
+                n,
             )
             f_time = time.time() - phase_start
             self.total_nfes += train_nfes
@@ -521,18 +417,13 @@ class IPFTrainer(BaseTrainer):
                 "phase_time_sec": f_time,
                 "train_nfes": train_nfes,
             }
-            if run_eval:
+            if _run_eval:
                 with self._isolated_global_rng(self.seed + SeedOffsets.IPF_EVAL):
                     f_metrics.update(eval_callback(f_eval, direction="f"))
 
             self.log_phase_end("forward", n, f_metrics)
 
-            # Dynamically format the log string based on whether evaluation ran
-            if not run_eval:
-                qual_str = ""
-            else:
-                qual_str = f"F-MMD: {f_metrics.get('eval_MMD', float('nan')):.4f}"
-
+            qual_str = self._format_eval_str(f_metrics, _run_eval, prefix="F-")
             self.logger.info(
                 f"Iteration {n} (Forward) | F-Loss: {f_loss:.4f} | {qual_str}"
             )
@@ -542,7 +433,10 @@ class IPFTrainer(BaseTrainer):
             self.track_path_consistency(self.f_model, self.b_model, ipf_iter=n)
 
             # --- Intermediate Checkpoint Saving ---
-            if save_per and save_path and (n % save_per == 0):
+            _save_model = (
+                save_per is not None and save_path is not None and (n % save_per == 0)
+            )
+            if _save_model:
                 save_model(
                     b_eval,
                     f"{save_path}/{self.b_model_base.__class__.__name__}_backward_checkpoint_{n}.pth",
@@ -552,8 +446,8 @@ class IPFTrainer(BaseTrainer):
 
         # Hand back the smoothed weights in the base models
         if self.use_ema:
-            self.ema_f.copy_to(self.f_model_base)
-            self.ema_b.copy_to(self.b_model_base)
+            self.f_ema.copy_to(self.f_model_base)
+            self.b_ema.copy_to(self.b_model_base)
 
         # Log final hardware and time footprint
         self.log_compute_cost([self.f_model_base, self.b_model_base])

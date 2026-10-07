@@ -24,10 +24,10 @@ class BaseConfig:
     )
 
     # --- Training ---
-    model_type: str = "sf2m"  # in [sde, minibatch, flow_m, ipf, imf, sf2m]
-    model_name: str = "SF2M"  # in [SDE, ODE, FM, IPF, IMF, SF2M]
+    model_type: str = "imf"  # in [sde, minibatch, flow_m, ipf, imf, sf2m]
+    model_name: str = "IMF"  # in [SDE, ODE, FM, IPF, IMF, SF2M]
     ot_method: str = "minibatch"  # in [sinkhorn, minibatch, greedy]
-    epochs: int = 1
+    epochs: int = 2
     batch_size: int = 512
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4

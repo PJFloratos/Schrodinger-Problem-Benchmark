@@ -1,6 +1,6 @@
 from src.training.base_trainer import BaseTrainer
 from src.core.dynamics import ConditionalVectorField
-from src.models.ema import EMAHelper
+from src.models.components import EMAHelper
 from src.utils.seed import SeedOffsets
 from src.utils import text_logger, save_model
 
@@ -42,20 +42,20 @@ class Trainer(BaseTrainer):
         use_ema: bool = True,
         use_amp: bool = True,
     ) -> None:
-        super().__init__(device=device, metric_logger=metric_logger)
+        super().__init__(
+            dataset=dataset,
+            batch_size=batch_size,
+            seed=seed,
+            device=device,
+            metric_logger=metric_logger,
+            use_amp=use_amp,
+        )
 
-        self.dataset = dataset
-        self.batch_size = batch_size
         self.opt = opt
-        self.seed = seed
         self.train_prop = train_prop
         self.grad_clip = grad_clip
-        self.device = device
         self.use_ema = use_ema
 
-        # -------------------------------------------------------------
-        # 0. Private noise generators (live on the compute device)
-        # -------------------------------------------------------------
         # Training noise: one continuous stream across epochs, touched by nothing else.
         self.train_gen = torch.Generator(device=self.device)
         self.train_gen.manual_seed(self.seed + SeedOffsets.TRAIN_NOISE)
@@ -65,75 +65,17 @@ class Trainer(BaseTrainer):
         # valid_loss only changes when the weights change.
         self.valid_gen = torch.Generator(device=self.device)
 
-        # -------------------------------------------------------------
-        # 1. Global channels_last & Hardware Settings
-        # -------------------------------------------------------------
-        self.data_shape = tuple(self.dataset[0].shape)
-        is_image = len(self.data_shape) == 3  # (C, H, W)
-
-        self.memory_format = (
-            torch.channels_last
-            if (self.device.type == "cuda" and is_image)
-            else torch.contiguous_format
-        )
-
-        # if self.device.type == "cuda" and is_image:
-        #     torch.backends.cudnn.benchmark = True
-
-        # -------------------------------------------------------------
-        # 2. Precision Settings (AMP)
-        # -------------------------------------------------------------
-        self.use_amp = use_amp and (self.device.type == "cuda")
+        # AMP scaler
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
-        self.amp_dtype = torch.float16 if self.device.type == "cuda" else torch.bfloat16
 
-        # -------------------------------------------------------------
-        # 3. Model, EMA & Compilation
-        # -------------------------------------------------------------
-        self.model_base = model.to(device, memory_format=self.memory_format)
-
-        if self.use_ema:
-            # The helper owns a persistent EMA copy of the model (`self.ema.model`)
-            # and keeps it up to date after every optimizer step.
-            self.ema = EMAHelper(mu=ema_mu, device=self.device)
-            self.ema.register(self.model_base)
-        else:
-            self.ema = None
-
-        self.use_compile = self.device.type == "cuda"
-        if self.use_compile:
-            self.model = torch.compile(self.model_base, mode="reduce-overhead")
-        else:
-            self.model = self.model_base
-
-    # ------------------------------------------------------------------
-    # RNG helpers
-    # ------------------------------------------------------------------
-    @contextmanager
-    def _isolated_global_rng(self, seed: int):
-        """
-        Seed the global CPU/CUDA RNGs for the duration of the block and restore the
-        previous state afterwards. Used around eval_callback, whose Evaluator and
-        model.generate() draw from the global generators: it now sees the same noise
-        every time it runs, and can never shift anybody else's random stream.
-        """
-        devices = []
-        if self.device.type == "cuda":
-            idx = (
-                self.device.index
-                if self.device.index is not None
-                else torch.cuda.current_device()
-            )
-            devices = [idx]
-
-        with torch.random.fork_rng(devices=devices):
-            torch.manual_seed(seed)
-            yield
+        # Model setup
+        self.model_base, self.model, self.ema, _ = self._setup_model(
+            model=model, ema_mu=ema_mu, use_ema=use_ema, create_sampler=False
+        )
 
     # ------------------------------------------------------------------
     # Data
     # ------------------------------------------------------------------
-
     def _get_loaders(self) -> Tuple[DataLoader, DataLoader]:
         split_gen = torch.Generator().manual_seed(self.seed + SeedOffsets.TRAIN_SPLIT)
 
@@ -168,34 +110,9 @@ class Trainer(BaseTrainer):
 
         return train_dl, valid_dl
 
-    @staticmethod
-    def _greedy_assignment_gpu(
-        cost_matrix: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Pure-GPU greedy approximation of Minibatch Optimal Transport.
-        Eliminates the massive CPU synchronization bottleneck caused by SciPy.
-        """
-        B = cost_matrix.shape[0]
-        row_ind = torch.arange(B, device=cost_matrix.device)
-        col_ind = torch.zeros(B, dtype=torch.long, device=cost_matrix.device)
-
-        flat_cost = cost_matrix.clone().flatten()
-        for _ in range(B):
-            min_idx = torch.argmin(flat_cost)
-            r, c = min_idx // B, min_idx % B
-            col_ind[r] = c
-
-            # Mask out the assigned row and column
-            flat_cost[r * B : (r + 1) * B] = float("inf")
-            flat_cost[c::B] = float("inf")
-
-        return row_ind, col_ind
-
     # ------------------------------------------------------------------
-    # One pass over a loader (train if model.training, else validation)
+    # Training & Validation
     # ------------------------------------------------------------------
-
     def _process_data_loaders(
         self, dl: DataLoader, epoch: int, model: nn.Module
     ) -> Tuple[float, float]:
@@ -217,7 +134,7 @@ class Trainer(BaseTrainer):
             t = torch.rand(B, 1, device=self.device, generator=gen) * 0.999
 
             # Target Construction via Dynamics
-            x_t, target_u, t_expand = ConditionalVectorField.get_interpolant_and_target(
+            x_t, target_u, t_net = ConditionalVectorField.get_interpolant_and_target(
                 model_type=model_type,
                 z_batch=z_batch,
                 t=t,
@@ -236,7 +153,7 @@ class Trainer(BaseTrainer):
                     model_type=model_type,
                     pred_u=pred_u,
                     target_u=target_u,
-                    t_expand=t_expand,
+                    t_net=t_net,
                 )
 
             if training:
@@ -315,12 +232,6 @@ class Trainer(BaseTrainer):
 
         train_dl, valid_dl = self._get_loaders()
 
-        # Set the probe batch for parameter drift tracking safely
-        probe_batch = next(iter(valid_dl))
-        if isinstance(probe_batch, (list, tuple)):
-            probe_batch = probe_batch[0]
-        self.fixed_probe_batch = probe_batch.to(self.device)
-
         for epoch in range(1, epochs + 1):
             Trainer.logger.debug(f"-> Epoch: {epoch}/{epochs}")
 
@@ -346,40 +257,33 @@ class Trainer(BaseTrainer):
             }
 
             # Run evaluation condition
-            run_eval = False
-            if eval_callback is not None:
-                if eval_per is not None and (epoch % eval_per == 0):
-                    run_eval = True
-
-            if run_eval:
+            _run_eval = (
+                eval_callback is not None
+                and eval_per is not None
+                and (epoch % eval_per == 0)
+            )
+            if _run_eval:
                 # 'b' direction used traditionally for generative path evaluation
                 with self._isolated_global_rng(self.seed + SeedOffsets.TRAIN_EVAL):
                     metrics.update(eval_callback(eval_model, direction="b"))
 
             # --- BaseTrainer Outer Metric Hooks ---
             self.log_phase_end("epoch", epoch, metrics)
-
             self.track_parameter_drift(self.model_base, ipf_iter=epoch)
 
-            # Dynamically format the log string based on whether evaluation ran
-            qual_str = ""
-            if not run_eval:
-                qual_str = ""
-            elif "FID" in metrics:
-                qual_str = (
-                    f"FID: {metrics['FID']:.3f} | "
-                    f"Prec: {metrics['Precision']:.3f} | "
-                    f"Rec: {metrics['Recall']:.3f}"
-                )
-            else:
-                qual_str = f"MMD: {metrics.get('eval_MMD', float('nan')):.6f}"
-
-            Trainer.logger.info(
+            # Logging
+            qual_str = self._format_eval_str(metrics, _run_eval)
+            self.logger.info(
                 f"     Epoch {epoch} | Train Loss: {train_loss:.6f} | Valid Loss: {valid_loss:.6f} | {qual_str}"
             )
 
             # Saving the model
-            if save_per and save_path and (epoch % save_per == 0):
+            _save_model = (
+                save_per is not None
+                and save_path is not None
+                and (epoch % save_per == 0)
+            )
+            if _save_model:
                 save_model(
                     eval_model,
                     f"{save_path}/{self.model_base.__class__.__name__}_checkpoint_{epoch}.pth",
@@ -396,13 +300,7 @@ class Trainer(BaseTrainer):
         if save_path:
             save_model(
                 eval_model,
-                f"{save_path}/{self.model_base.__class__.__name__}_checkpoint_{epoch}.pth",
+                f"{save_path}/{self.model_base.__class__.__name__}_checkpoint_final.pth",
             )
 
         return eval_model, metrics
-
-
-"""
-Opt: 0:10
-Unopt: 0:17
-"""
