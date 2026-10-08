@@ -37,11 +37,13 @@ class SF2MInferenceWrapper(nn.Module):
         v_hat = self.u(x, t_safe)
         eps_hat = self.s(x, t_safe)
 
+        t_b = t_safe.view(-1, *([1] * (x.dim() - 1)))
+
         if self.direction == "b":
             # Forward SDE drift: u_t^o + 0.5 * sigma^2 * s_t
-            drift = v_hat - self.sigma * torch.sqrt(t_safe / (1.0 - t_safe)) * eps_hat
+            drift = v_hat - self.sigma * torch.sqrt(t_b / (1.0 - t_b)) * eps_hat
         else:
             # Reverse SDE drift (Anderson): -u_t^o + 0.5 * sigma^2 * s_t
-            drift = -v_hat - self.sigma * torch.sqrt((1.0 - t_safe) / t_safe) * eps_hat
+            drift = -v_hat - self.sigma * torch.sqrt((1.0 - t_b) / t_b) * eps_hat
 
         return drift

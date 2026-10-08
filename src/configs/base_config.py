@@ -24,8 +24,8 @@ class BaseConfig:
     )
 
     # --- Training ---
-    model_type: str = "imf"  # in [sde, minibatch, flow_m, ipf, imf, sf2m]
-    model_name: str = "IMF"  # in [SDE, ODE, FM, IPF, IMF, SF2M]
+    model_type: str = "sf2m"  # in [sde, minibatch, flow_m, ipf, imf, sf2m]
+    model_name: str = "SF2M"  # in [SDE, ODE, FM, IPF, IMF, SF2M]
     ot_method: str = "minibatch"  # in [sinkhorn, minibatch, greedy]
     epochs: int = 2
     batch_size: int = 512
@@ -33,7 +33,7 @@ class BaseConfig:
     weight_decay: float = 1e-4
     grad_clip: float = 1.0
     sim_steps: int = 30
-    num_iter: int = 5000
+    num_iter: int = 500
     refresh_every: int = 250
     num_cache_batches: int = 10
     save_interval: int = 500
