@@ -204,17 +204,17 @@ class BaseTrainer(ABC):
             generator=gen,
         )
 
+        eps = getattr(self, "eps", 1e-4)
+        t = (
+            torch.rand(self.batch_size, 1, device=self.device, generator=gen)
+            * (1.0 - 2.0 * eps)
+            + eps
+        )
+
         # Data Unpacking (Differs based on cache structure)
         if model_type == "imf":
             # IMF unpacks Endpoints (X0, X1) and dynamically builds the bridge
             x0, x1 = self._probe_tensors[0][idx], self._probe_tensors[1][idx]
-            eps = getattr(self, "eps", 1e-4)
-            t = (
-                torch.rand(self.batch_size, 1, device=self.device, generator=gen)
-                * (1.0 - 2.0 * eps)
-                + eps
-            )
-
             x_t, target, t_net = ConditionalVectorField.get_interpolant_and_target(
                 model_type="imf",
                 z_batch=x1,
@@ -240,7 +240,8 @@ class BaseTrainer(ABC):
         with torch.autocast(
             device_type=self.device.type, dtype=self.amp_dtype, enabled=self.use_amp
         ):
-            pred = model(x_t, t_net)
+            # pred = model(x_t, t_net)
+            pred = model(x_t, t)
             loss = ConditionalVectorField.compute_loss(
                 model_type,
                 pred,

@@ -297,7 +297,8 @@ class IMFTrainer(BaseTrainer):
             with torch.autocast(
                 device_type=self.device.type, dtype=self.amp_dtype, enabled=self.use_amp
             ):
-                pred = model(x_t, t_net)
+                # pred = model(x_t, t_net)
+                pred = model(x_t, t)
                 loss = ConditionalVectorField.compute_loss(
                     "imf", pred, target, t_net, sigma=self.sigma
                 )

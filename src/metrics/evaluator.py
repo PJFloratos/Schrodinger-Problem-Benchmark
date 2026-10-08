@@ -308,8 +308,10 @@ class Evaluator:
                 ):
                     if is_sf2m:
                         # SF2M wrapper holds both networks; we query them directly
-                        v_pred = model.u(x_t, t_net)
-                        eps_pred = model.s(x_t, t_net)
+                        # v_pred = model.u(x_t, t_net)
+                        # eps_pred = model.s(x_t, t_net)
+                        v_pred = model.u(x_t, t)
+                        eps_pred = model.s(x_t, t)
                         v_target, eps_target = target_u
 
                         loss_v, loss_eps = ConditionalVectorField.compute_sf2m_loss(
@@ -318,7 +320,8 @@ class Evaluator:
                         batch_loss = loss_v + loss_eps
                     else:
                         # Standard single-network models (SDE, Flow Matching, Minibatch, IMF)
-                        pred_u = model(x_t, t_net)
+                        # pred_u = model(x_t, t_net)
+                        pred_u = model(x_t, t)
                         batch_loss = ConditionalVectorField.compute_loss(
                             model_type=eval_model_type,
                             pred_u=pred_u,
