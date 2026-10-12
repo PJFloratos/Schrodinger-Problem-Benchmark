@@ -1,4 +1,5 @@
 from src.models import VelocityMLP, SimpleUNet
+from src.models.components import LightSBM
 from src.training import Trainer, IPFTrainer, IMFTrainer, SF2MTrainer
 from src.metrics import Evaluator
 from src.metrics.plot import generate_and_plot
@@ -98,8 +99,21 @@ class Pipeline:
 
     def _get_model_class_and_kwargs(self):
         """Resolves the base architecture based on the dataset config."""
-        if isinstance(self.cfg, Toy2dConfig):
+        if self.cfg.model_type == "lightsbm":
+            self.cfg.use_compile = False
+            self.cfg.use_amp = False
+            self.cfg.use_ema = False
+            self.cfg.weight_decay = 0
+
+            return LightSBM, {
+                "dim": self.cfg.input_dim,
+                "n_potentials": self.cfg.n_potentials,
+                "epsilon": getattr(self.cfg, "epsilon", 0.1),
+            }
+
+        elif isinstance(self.cfg, Toy2dConfig):
             return VelocityMLP, {"d": self.cfg.input_dim, "hidden": self.cfg.hidden_dim}
+
         return SimpleUNet, {"channels": getattr(self.cfg, "input_channels", 1)}
 
     def _build_model(
@@ -132,6 +146,29 @@ class Pipeline:
         )
         self.logger.info(f"Standard Model deployed on: {self.cfg.device}")
 
+        if self.cfg.model_type == "lightsbm":
+            self.logger.debug(
+                "Performing data-driven initialization for LightSBM means..."
+            )
+
+            # Extract exactly n_potentials samples from the dataset
+            samples = []
+            for i in range(self.cfg.n_potentials):
+                # Safely handle datasets that might return tuples (e.g., (data, label))
+                item = self.train_dataset[i]
+                if isinstance(item, tuple) or isinstance(item, list):
+                    item = item[0]  # Assuming the target data is the first element
+                samples.append(item)
+
+            # Stack and push to the correct device
+            init_samples = torch.stack(samples).to(self.cfg.device)
+
+            # Overwrite the random normal initialization
+            model.init_r_by_samples(init_samples)
+            self.logger.debug(
+                f"Successfully initialized {self.cfg.n_potentials} Gaussian centers."
+            )
+
         opt = optim.AdamW(
             model.parameters(),
             lr=self.cfg.learning_rate,
@@ -150,6 +187,7 @@ class Pipeline:
             grad_clip=self.cfg.grad_clip,
             use_amp=self.cfg.use_amp,
             use_ema=self.cfg.use_ema,
+            use_compile=self.cfg.use_compile,
         )
 
         gen_model, metrics = trainer.fit(

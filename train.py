@@ -1,6 +1,8 @@
 # https://github.com/JTT94/diffusion_schrodinger_bridge/
 # https://github.com/yuyang-shi/dsbm-pytorch
 # https://github.com/atong01/conditional-flow-matching/tree/main/runner/src
+# https://github.com/ngushchin/LightSB/blob/main/src/light_sb.py
+# https://github.com/SKholkin/LightSB-Matching/blob/main/src/lightsbm.py
 
 
 from src.pipeline import Pipeline

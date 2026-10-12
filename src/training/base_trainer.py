@@ -73,6 +73,7 @@ class BaseTrainer(ABC):
         use_ema: bool,
         sigma: Optional[float] = None,
         create_sampler: bool = False,
+        use_compile: bool = True,
     ) -> Tuple[nn.Module, nn.Module, Optional[EMAHelper], Optional[nn.Module]]:
         """
         Standardizes model preparation: device placement, sigma injection,
@@ -95,7 +96,7 @@ class BaseTrainer(ABC):
         sampler_base = copy.deepcopy(model_base) if create_sampler else None
 
         # 4. Compilation
-        if self.device.type == "cuda":
+        if self.device.type == "cuda" and use_compile:
             model_compiled = torch.compile(model_base, mode="reduce-overhead")
             sampler_compiled = (
                 torch.compile(sampler_base, mode="reduce-overhead")

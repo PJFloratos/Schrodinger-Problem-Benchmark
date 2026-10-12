@@ -24,10 +24,13 @@ class BaseConfig:
     )
 
     # --- Training ---
-    model_type: str = "sf2m"  # in [sde, minibatch, flow_m, ipf, imf, sf2m]
-    model_name: str = "SF2M"  # in [SDE, ODE, FM, IPF, IMF, SF2M]
+    model_type: str = (
+        "lightsbm"  # in [sde, minibatch, flow_m, ipf, imf, sf2m, lightsbm]
+    )
+    model_name: str = "LSBM"  # in [SDE, ODE, FM, IPF, IMF, SF2M, LSBM]
     ot_method: str = "minibatch"  # in [sinkhorn, minibatch, greedy]
-    epochs: int = 2
+    n_potentials: int = 500
+    epochs: int = 100
     batch_size: int = 512
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
@@ -37,7 +40,8 @@ class BaseConfig:
     refresh_every: int = 250
     num_cache_batches: int = 10
     save_interval: int = 500
-    eval_per: int = 1
+    eval_per: int = 20
+    use_compile: bool = True
     use_amp: bool = False
     use_ema: bool = False
 

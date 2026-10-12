@@ -103,11 +103,15 @@ def generate_and_plot(generative_model, eval_res, cfg):
                 cfg.plots_path,
                 f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_{cfg.num_iter}it.png",
             )
-
         elif cfg.model_type in ["sf2m"]:
             save_path = os.path.join(
                 cfg.plots_path,
                 f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_{cfg.num_iter}it_{cfg.ot_method}.png",
+            )
+        elif cfg.model_type in ["lightsbm"]:
+            save_path = os.path.join(
+                cfg.plots_path,
+                f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_{cfg.n_potentials}p.png",
             )
         else:
             save_path = os.path.join(
@@ -128,6 +132,11 @@ def generate_and_plot(generative_model, eval_res, cfg):
             save_path = os.path.join(
                 cfg.plots_path,
                 f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_{cfg.num_iter}it_{cfg.ot_method}.png",
+            )
+        elif cfg.model_type in ["lightsbm"]:
+            save_path = os.path.join(
+                cfg.plots_path,
+                f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_{cfg.n_potentials}p.png",
             )
         else:
             save_path = os.path.join(

@@ -41,6 +41,7 @@ class Trainer(BaseTrainer):
         ema_mu: float = 0.999,
         use_ema: bool = True,
         use_amp: bool = True,
+        use_compile: bool = True,
     ) -> None:
         super().__init__(
             dataset=dataset,
@@ -70,7 +71,11 @@ class Trainer(BaseTrainer):
 
         # Model setup
         self.model_base, self.model, self.ema, _ = self._setup_model(
-            model=model, ema_mu=ema_mu, use_ema=use_ema, create_sampler=False
+            model=model,
+            ema_mu=ema_mu,
+            use_ema=use_ema,
+            use_compile=use_compile,
+            create_sampler=False,
         )
 
     # ------------------------------------------------------------------
@@ -138,6 +143,7 @@ class Trainer(BaseTrainer):
                 model_type=model_type,
                 z_batch=z_batch,
                 t=t,
+                sigma=getattr(self.model_base, "sigma", 1.0),
                 gen=gen,
                 memory_format=self.memory_format,
             )

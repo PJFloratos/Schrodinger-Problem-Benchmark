@@ -170,6 +170,29 @@ class ConditionalVectorField:
             # Pack targets together
             target_u = (v_target, eps_target)
 
+        elif model_type == "lightsbm":
+            # 1. Sample Prior
+            x_0 = cls._randn_like(z_batch, gen, memory_format)
+
+            # 2. Minibatch OT assignment
+            cost_matrix = torch.cdist(x_0.view(B, -1), z_batch.view(B, -1), p=2).pow(2)
+            row_ind, col_ind = cls.greedy_assignment_gpu(cost_matrix)
+            x_0 = x_0[row_ind]
+            z_batch = z_batch[col_ind]
+
+            # 3. Brownian Bridge Interpolation
+            noise = cls._randn_like(z_batch, gen, memory_format)
+
+            # x_t = t * x_1 + (1-t) * x_0 + \sqrt{\epsilon t (1-t)} * z
+            x_t = (
+                t_expand * z_batch
+                + (1.0 - t_expand) * x_0
+                + sigma * torch.sqrt(t_expand * (1.0 - t_expand)) * noise
+            )
+
+            # 4. Target for matching the drift
+            target_u = (z_batch - x_t) / (1.0 - t_expand)
+
         else:
             raise ValueError(f"Unknown model_type: {model_type}")
 
@@ -188,7 +211,7 @@ class ConditionalVectorField:
 
         raw_loss = (pred_u - target_u) ** 2
 
-        if model_type in ["sde", "minibatch"]:
+        if model_type in ["sde", "minibatch", "lightsbm"]:
             return torch.mean((1.0 - t_net) * raw_loss)
 
         elif model_type == "ipf":

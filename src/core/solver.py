@@ -120,6 +120,15 @@ class EulerSampler:
                 # The shape tuple allows it to work for both (C, H, W) and (D,)
                 x = torch.randn(n, *shape, device=device, generator=g_init)
 
+            # --- EXACT 1-STEP GENERATION FOR LIGHTSBM ---
+            if self.model_type == "lightsbm":
+                x_1 = model.sample_x1(x)
+                out.append(x_1)
+
+                if verbose:
+                    pbar.update(integration_steps)  # Visually complete the bar
+                continue
+
             t = torch.empty(n, 1, device=device)
 
             for i in range(integration_steps):
@@ -140,7 +149,7 @@ class EulerSampler:
                 if self.model_type in ["minibatch", "flow_m"]:
                     x = self.euler_maruyama_step(x, drift, h)
 
-                elif self.model_type in ["sde", "sf2m", "imf", "ipf"]:
+                elif self.model_type in ["sde", "sf2m", "imf", "ipf", "lightsbm"]:
                     # Backward chain drops SDE noise on the final step; Forward chain does not.
                     drop_noise = (not is_forward) and (i == integration_steps - 1)
 
