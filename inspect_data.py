@@ -1,8 +1,11 @@
-from src.utils.data import get_dataset
-from src.configs import BaseConfig, Toy2dConfig, MNISTConfig
+from src.datasets.data_utils import get_dataset
+from src.configs import BaseConfig, Toy2dConfig, MNISTConfig, CIFAR10Config
 
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
+
+import numpy as np
+from sklearn.decomposition import PCA
 
 import os
 import matplotlib.pyplot as plt
@@ -12,10 +15,70 @@ from enum import Enum
 class DatasetType(str, Enum):
     TOY2D = "toy2d"
     MNIST = "mnist"
+    CIFAR10 = "cifar10"
 
 
 # Pick the dataset to inspect
 ACTIVE_DATASET = DatasetType.TOY2D
+
+
+def quantify_pca_bounds(cfg: BaseConfig, threshold: float = 0.95) -> None:
+    """
+    Computes PCA on the dataset to analyze the explained variance and
+    the Wasserstein error bound (sum of discarded eigenvalues).
+    """
+    if isinstance(cfg, Toy2dConfig):
+        print(
+            "Skipping PCA: Toy2D is already dimension 2. Reducing to 1D destroys the manifold."
+        )
+        return
+
+    print(f"\n--- Running PCA Analysis on {cfg.dataset_name} ---")
+
+    # get dataset
+    _, dataset = get_dataset(cfg)
+
+    # Load the entire dataset for accurate covariance estimation
+    # (For massive datasets, use a large subset, e.g., 10,000 samples)
+    dataloader = DataLoader(dataset, batch_size=len(dataset), shuffle=False)
+    images = next(iter(dataloader))
+
+    # Flatten the images from (N, 1, 28, 28) to (N, 784)
+    X = images.view(images.size(0), -1).numpy()
+
+    # Fit PCA
+    pca = PCA().fit(X)
+    eigenvalues = pca.explained_variance_
+    cumulative_variance = np.cumsum(pca.explained_variance_ratio_)
+
+    # Find the dimension k that captures 95% of the total variance
+    k = (np.argmax(cumulative_variance >= threshold) + 1).item()
+
+    # Calculate the Wasserstein Error Bound (Module 5)
+    # This is the exact sum of the discarded eigenvalues
+    discarded_variance = np.sum(eigenvalues[k:])
+
+    print(f"Original dimension (p): {X.shape[1]}")
+    print(f"Reduced dimension (k) for {threshold}% variance: {k}")
+    print(f"Compression Ratio: {X.shape[1] / k:.1f}x smaller state space")
+    print(
+        f"Wasserstein Error Bound (sum of discarded eigenvalues): {discarded_variance:.4f}"
+    )
+
+    # Plot the Scree Plot (Explained Variance)
+    plt.figure(figsize=(8, 5))
+    plt.plot(range(1, k + 1), cumulative_variance[:k], linewidth=2, color="indigo")
+    plt.axvline(x=k, color="darkorange", linestyle="--", label=f"k={k} (95% Var)")
+    plt.title("Cumulative Explained Variance (MNIST)")
+    plt.xlabel("Number of Principal Components (k)")
+    plt.ylabel("Proportion of Variance Retained")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    save_path = os.path.join(os.path.dirname(cfg.plots_path), "pca_variance_plot.png")
+    plt.savefig(save_path)
+    plt.close()
+    print(f"PCA Scree plot saved to {save_path}\n")
 
 
 def inspect_dataset(cfg: BaseConfig) -> None:
@@ -65,6 +128,12 @@ def inspect_dataset(cfg: BaseConfig) -> None:
 
 
 if __name__ == "__main__":
-    config = Toy2dConfig() if ACTIVE_DATASET == DatasetType.TOY2D else MNISTConfig()
+    if ACTIVE_DATASET == DatasetType.MNIST:
+        config = MNISTConfig()
+    elif ACTIVE_DATASET == DatasetType.CIFAR10:
+        config = CIFAR10Config()
+    else:
+        config = Toy2dConfig()
 
     inspect_dataset(config)
+    # quantify_pca_bounds(config, threshold=0.999)
