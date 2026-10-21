@@ -21,7 +21,7 @@ from scipy.optimize import linear_sum_assignment
 import math
 import time
 from tqdm import tqdm
-from typing import Dict, Optional, Sequence, Union, Tuple, Callable
+from typing import Dict, Optional, Sequence, Union, Tuple, Callable, Any
 
 
 def _derive_seed(seed: int, stream: int) -> int:
@@ -48,6 +48,7 @@ class Evaluator:
         n_gen_samples: Optional[int] = None,  # None -> as many as the test set
         ground_truth_v: Optional[Callable] = None,
         seed: int = 0,
+        solver_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.device = device
         self.sde_steps = sde_steps
@@ -55,6 +56,7 @@ class Evaluator:
         self.ground_truth_v = ground_truth_v
         self.seed = seed
         self._x_test = None
+        self.solver_kwargs = solver_kwargs if solver_kwargs else {}
 
         self.dl = DataLoader(
             test_ds,
@@ -175,6 +177,7 @@ class Evaluator:
                 device=self.device,
                 init_seed=_derive_seed(self.seed, SeedOffsets.EVAL_SOLVER_INIT),
                 step_seed=_derive_seed(self.seed, SeedOffsets.EVAL_SOLVER_STEP),
+                **self.solver_kwargs,
             )
             gen_time = time.time() - gen_start
 
@@ -193,6 +196,7 @@ class Evaluator:
                 x_init=x_init,
                 batch_size=256,
                 step_seed=self._forward_sim_seed,
+                **self.solver_kwargs,
             )
             gen_time = time.time() - gen_start
 
@@ -220,7 +224,7 @@ class Evaluator:
             results["eval_MMD"] = float(get_mmd(x_ref, x_gen, device=self.device))
 
             # Ground Truth
-            if self.ground_truth_v and direction == "b":
+            if self.ground_truth_v and direction == "b" and model.model_type != "ebm":
                 results["drift_MSE"] = get_drift_mse(model, self.ground_truth_v, x_gen)
 
         if log:
@@ -242,6 +246,11 @@ class Evaluator:
         self, model: nn.Module, direction: str, use_amp: bool
     ) -> float:
         """Calculates regression health against straight-line/SDE paths and extracts targets."""
+
+        # EBM loss requires MCMC and spatial autograd. The EBMTrainer handles this.
+        # We bypass it here to prevent inference_mode crashes.
+        if model.model_type == "ebm":
+            return None
 
         gen = self._noise_gen
         # Re-seed on every call: each evaluation sees the exact same (t, noise) draws,
@@ -285,6 +294,12 @@ class Evaluator:
                         generator=gen,
                     ).contiguous(memory_format=self.memory_format)
 
+                # IMF relies on x0=Data and x1=Prior for both forward and backward training.
+                # Evaluator naturally draws z_batch=Data and generates x0_batch=Prior.
+                # We swap them here so the Brownian bridge regression target matches training.
+                if eval_model_type == "imf":
+                    z_batch, x0_batch = x0_batch, z_batch
+
                 x_t, target_u, t_net = (
                     ConditionalVectorField.get_interpolant_and_target(
                         model_type=eval_model_type,
@@ -308,10 +323,10 @@ class Evaluator:
                 ):
                     if is_sf2m:
                         # SF2M wrapper holds both networks; we query them directly
-                        # v_pred = model.u(x_t, t_net)
-                        # eps_pred = model.s(x_t, t_net)
-                        v_pred = model.u(x_t, t)
-                        eps_pred = model.s(x_t, t)
+                        v_pred = model.u(x_t, t_net)
+                        eps_pred = model.s(x_t, t_net)
+                        # v_pred = model.u(x_t, t)
+                        # eps_pred = model.s(x_t, t)
                         v_target, eps_target = target_u
 
                         loss_v, loss_eps = ConditionalVectorField.compute_sf2m_loss(
@@ -320,8 +335,8 @@ class Evaluator:
                         batch_loss = loss_v + loss_eps
                     else:
                         # Standard single-network models (SDE, Flow Matching, Minibatch, IMF)
-                        # pred_u = model(x_t, t_net)
-                        pred_u = model(x_t, t)
+                        pred_u = model(x_t, t_net)
+                        # pred_u = model(x_t, t)
                         batch_loss = ConditionalVectorField.compute_loss(
                             model_type=eval_model_type,
                             pred_u=pred_u,

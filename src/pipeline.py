@@ -1,6 +1,12 @@
-from src.models import VelocityMLP, SimpleUNet
+from src.models import VelocityMLP, EnergyMLP, SimpleUNet
 from src.models.components import LightSBM
-from src.training import Trainer, IPFTrainer, IMFTrainer, SF2MTrainer
+from src.training import (
+    Trainer,
+    IPFTrainer,
+    IMFTrainer,
+    SF2MTrainer,
+    EBMTrainer,
+)
 from src.metrics import Evaluator
 from src.metrics.plot import generate_and_plot
 from src.utils import text_logger
@@ -30,12 +36,26 @@ class Pipeline:
         self.test_dataset = test_dataset
         self.metric_logger = metric_logger
 
+        # Extract solver-specific kwargs directly from the config
+        solver_kwargs = {}
+        if self.cfg.model_type == "ebm":
+            # Note: We scale the spatial clip here just like the EBMTrainer did
+            epsilon = getattr(self.cfg, "epsilon", 0.1)
+            solver_kwargs = {
+                "epsilon": epsilon,
+                "eta_max_infer": getattr(self.cfg, "ula_step_size", 1e-3),
+                "eta_min_infer": getattr(self.cfg, "eta_min_infer", 1e-4),
+                "spatial_clip": getattr(self.cfg, "spatial_clip", 10.0) / epsilon,
+                "ebm_steps": getattr(self.cfg, "ebm_steps", 1000),
+            }
+
         # Initialize the evaluator internally
         self.evaluator = Evaluator(
             test_ds=self.test_dataset,
             device=self.cfg.device,
             sde_steps=self.cfg.eval_sim_steps,
             seed=self.cfg.eval_seed,
+            solver_kwargs=solver_kwargs,
         )
 
     def execute(
@@ -83,6 +103,8 @@ class Pipeline:
             return self._run_imf()
         elif self.cfg.model_type == "sf2m":
             return self._run_sf2m()
+        elif self.cfg.model_type == "ebm":
+            return self._run_ebm()
         else:
             return self._run_standard()
 
@@ -112,7 +134,8 @@ class Pipeline:
             }
 
         elif isinstance(self.cfg, Toy2dConfig):
-            return VelocityMLP, {"d": self.cfg.input_dim, "hidden": self.cfg.hidden_dim}
+            model_cls = EnergyMLP if self.cfg.model_type == "ebm" else VelocityMLP
+            return model_cls, {"d": self.cfg.input_dim, "hidden": self.cfg.hidden_dim}
 
         return SimpleUNet, {"channels": getattr(self.cfg, "input_channels", 1)}
 
@@ -335,4 +358,45 @@ class Pipeline:
 
         # gen_model here is the SF2MInferenceWrapper, which combines u_model and s_model
         # to generate the correct drift for inference via Anderson's formula.
+        return gen_model, metrics
+
+    def _run_ebm(self) -> torch.nn.Module:
+        model = self._build_model("ebm", SeedOffsets.GEN_INIT, name="ebm_model")
+        self.logger.info(f"EBM Model deployed on: {self.cfg.device}")
+
+        opt = optim.AdamW(
+            model.parameters(),
+            lr=self.cfg.learning_rate,
+            weight_decay=self.cfg.weight_decay,
+        )
+
+        trainer = EBMTrainer(
+            model=model,
+            dataset=self.train_dataset,
+            batch_size=self.cfg.batch_size,
+            opt=opt,
+            metric_logger=self.metric_logger,
+            seed=self.cfg.seed,
+            device=self.cfg.device,
+            epsilon=self.cfg.epsilon,
+            ula_steps=self.cfg.ula_steps,
+            ula_step_size=self.cfg.ula_step_size,
+            spatial_clip=self.cfg.spatial_clip,
+            l2_reg=self.cfg.l2_reg,
+            cold_start=self.cfg.cold_start,
+            grad_clip=self.cfg.grad_clip,
+            use_amp=self.cfg.use_amp,
+            use_ema=self.cfg.use_ema,
+            use_compile=False,  # Explicitly disabled: torch.compile frequently breaks on double autograd
+        )
+
+        # Standard epoch orchestration inherited from Trainer
+        gen_model, metrics = trainer.fit(
+            epochs=self.cfg.epochs,
+            save_per=self.cfg.save_interval,
+            save_path=self.cfg.models_path,
+            eval_callback=self._eval_callback,
+            eval_per=self.cfg.eval_per,
+        )
+
         return gen_model, metrics

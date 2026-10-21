@@ -38,10 +38,31 @@ class Toy2DDataset(Dataset):
             self.mu = torch.tensor([5.0, 5.0], dtype=torch.float32)
             X = torch.randn(self.n_samples, 2) * math.sqrt(2) + self.mu
 
+        elif dataset_type == "8gaussians":
+            # 8 distinct modes arranged in a circle - perfect for testing mode collapse
+            scale = 2.0
+            centers = [
+                (1, 0),
+                (-1, 0),
+                (0, 1),
+                (0, -1),
+                (1.0 / math.sqrt(2), 1.0 / math.sqrt(2)),
+                (1.0 / math.sqrt(2), -1.0 / math.sqrt(2)),
+                (-1.0 / math.sqrt(2), 1.0 / math.sqrt(2)),
+                (-1.0 / math.sqrt(2), -1.0 / math.sqrt(2)),
+            ]
+            centers = np.array([(scale * x, scale * y) for x, y in centers])
+
+            # Sample uniformly from the 8 centers and add small local noise
+            indices = np.random.choice(8, size=n_samples, replace=True)
+            noise = np.random.randn(n_samples, 2) * 0.15
+            X = centers[indices] + noise
+
         else:
             raise ValueError(f"Unknown dataset type: {dataset_type}")
 
-        if dataset_type == "gaussian":
+        # if dataset_type in ["gaussian", "8gaussians"]:
+        if dataset_type in ["gaussian", "8gaussians"]:
             # Skip scaling to preserve the exact analytical distribution
             self.data = torch.tensor(X, dtype=torch.float32)
         else:

@@ -1,5 +1,5 @@
-from src.datasets import Toy2DDataset, MNISTDataset
-from src.configs import BaseConfig, Toy2dConfig, MNISTConfig
+from src.datasets import Toy2DDataset, MNISTDataset, CIFAR10Dataset
+from src.configs import BaseConfig, Toy2dConfig, MNISTConfig, CIFAR10Config
 
 
 def get_dataset(cfg: BaseConfig):
@@ -10,6 +10,9 @@ def get_dataset(cfg: BaseConfig):
     elif isinstance(cfg, MNISTConfig):
         train = MNISTDataset(train=True)
         test = MNISTDataset(train=False)
+    elif isinstance(cfg, CIFAR10Config):
+        train = CIFAR10Dataset(train=True)
+        test = CIFAR10Dataset(train=False)
     else:
         raise ValueError(f"Unknown configuration type: {type(cfg)}")
 

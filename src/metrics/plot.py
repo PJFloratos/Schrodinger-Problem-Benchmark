@@ -63,6 +63,19 @@ def _generate(generative_model, cfg, n_samples: int) -> torch.Tensor:
         steps=cfg.eval_sim_steps,
         use_amp=cfg.use_amp and cfg.device.type == "cuda",
     )
+
+    solver_kwargs = {}
+    if generative_model.model_type == "ebm":
+        # Note: We scale the spatial clip here just like the EBMTrainer did
+        epsilon = getattr(cfg, "epsilon", 0.1)
+        solver_kwargs = {
+            "epsilon": epsilon,
+            "eta_max_infer": getattr(cfg, "ula_step_size", 1e-3),
+            "eta_min_infer": getattr(cfg, "eta_min_infer", 1e-4),
+            "spatial_clip": getattr(cfg, "spatial_clip", 10.0) / epsilon,
+            "ebm_steps": getattr(cfg, "ebm_steps", 1000),
+        }
+
     return sampler.generate(
         model=generative_model,
         shape=_sample_shape(cfg),
@@ -70,6 +83,7 @@ def _generate(generative_model, cfg, n_samples: int) -> torch.Tensor:
         n_samples=n_samples,
         init_seed=_derive_seed(cfg.eval_seed, SeedOffsets.EVAL_SOLVER_INIT),
         step_seed=_derive_seed(cfg.eval_seed, SeedOffsets.EVAL_SOLVER_STEP),
+        **solver_kwargs,
     )
 
 
@@ -113,6 +127,11 @@ def generate_and_plot(generative_model, eval_res, cfg):
                 cfg.plots_path,
                 f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_{cfg.n_potentials}p.png",
             )
+        elif cfg.model_type in ["ebm"]:
+            save_path = os.path.join(
+                cfg.plots_path,
+                f"{cfg.epsilon}eps_{cfg.epochs}ep_{cfg.ula_steps}ss.png",
+            )
         else:
             save_path = os.path.join(
                 cfg.plots_path, f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss.png"
@@ -137,6 +156,11 @@ def generate_and_plot(generative_model, eval_res, cfg):
             save_path = os.path.join(
                 cfg.plots_path,
                 f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss_{cfg.n_potentials}p.png",
+            )
+        elif cfg.model_type in ["ebm"]:
+            save_path = os.path.join(
+                cfg.plots_path,
+                f"{cfg.epsilon}eps_{cfg.epochs}ep_{cfg.ula_steps}ss.png",
             )
         else:
             save_path = os.path.join(

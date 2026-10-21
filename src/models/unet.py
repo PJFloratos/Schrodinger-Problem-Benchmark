@@ -3,8 +3,8 @@ from src.models.components import ResBlock
 
 import torch
 import torch.nn as nn
-import math
 
+import math
 from tqdm import tqdm
 from typing import Optional
 
@@ -42,12 +42,26 @@ class SimpleUNet(nn.Module):
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)
 
-    def forward(self, x, t):
+        # EBM Pooling Head
+        if self.model_type == "ebm":
+            self.ebm_pool = nn.AdaptiveAvgPool2d(1)
+            self.ebm_head = nn.Linear(128, 1)
+
+    def forward(self, x, t=None):
+        # EBM is static; feed a dummy zero-tensor to satisfy the ResBlocks' time dependencies
+        if t is None:
+            t = torch.zeros(x.size(0), device=x.device)
+
         t = self.time_mlp(t)
 
         x0 = self.conv0(x)
         x1 = self.down1(x0, t)
         x2 = self.down2(x1, t)
+
+        # Early exit for Energy-Based Model
+        if self.model_type == "ebm":
+            pooled = self.ebm_pool(x2).view(x2.size(0), -1)
+            return self.ebm_head(pooled)
 
         x = self.up1(x2, t)
         x = self.up2(torch.cat([x, x1], dim=1), t)

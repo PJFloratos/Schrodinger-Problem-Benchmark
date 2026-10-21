@@ -50,6 +50,9 @@ class SeedOffsets:
     SF2M_BRIDGE_NOISE = 1303
     SF2M_EVAL = 1305
 
+    # --- EBM Trainer Streams (1400+) ---
+    EBM_BUFFER_INIT = 1400
+
 
 def set_all_seeds(seed: int):
     """Locks down all RNGs and forces deterministic hardware execution."""

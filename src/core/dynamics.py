@@ -1,5 +1,7 @@
 import torch
 
+from scipy.optimize import linear_sum_assignment
+
 import math
 from typing import Tuple, Optional
 
@@ -16,6 +18,24 @@ class ConditionalVectorField:
         return torch.randn(
             ref.shape, device=ref.device, dtype=ref.dtype, generator=gen
         ).contiguous(memory_format=memory_format)
+
+    @staticmethod
+    def exact_ot_assignment_cpu(
+        cost_matrix: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Exact Minibatch Optimal Transport using Scipy's Hungarian algorithm on CPU."""
+        # Offload cost matrix to CPU for the exact solver
+        cost_np = cost_matrix.detach().cpu().numpy()
+
+        # Solve exact bipartite matching
+        row_ind, col_ind = linear_sum_assignment(cost_np)
+
+        # Push indices back to the original device
+        device = cost_matrix.device
+        return (
+            torch.tensor(row_ind, dtype=torch.long, device=device),
+            torch.tensor(col_ind, dtype=torch.long, device=device),
+        )
 
     @staticmethod
     def greedy_assignment_gpu(
@@ -97,7 +117,8 @@ class ConditionalVectorField:
 
             # Minibatch OT using the pure GPU implementation
             cost_matrix = torch.cdist(x_0.view(B, -1), z_batch.view(B, -1), p=2).pow(2)
-            row_ind, col_ind = cls.greedy_assignment_gpu(cost_matrix)
+            # row_ind, col_ind = cls.greedy_assignment_gpu(cost_matrix)
+            row_ind, col_ind = cls.exact_ot_assignment_cpu(cost_matrix)
 
             # Permute the batches to align them according to the optimal transport plan
             x_0 = x_0[row_ind]
@@ -136,15 +157,17 @@ class ConditionalVectorField:
                 target_u = (z_batch - x0_batch) - sigma * torch.sqrt(
                     t_expand / (1.0 - t_expand)
                 ) * z
-                t_net = t_expand
+                # t_net = t_expand
+                t_net = t
             else:
                 target_u = (
                     -(z_batch - x0_batch)
                     - sigma * torch.sqrt((1.0 - t_expand) / t_expand) * z
                 )
-                t_net = (
-                    1.0 - t_expand
-                )  # The backward network processes the state at 1 - t
+                # t_net = (
+                #     1.0 - t_expand
+                # )  # The backward network processes the state at 1 - t
+                t_net = 1.0 - t
 
             return x_t, target_u, t_net
 
@@ -176,7 +199,8 @@ class ConditionalVectorField:
 
             # 2. Minibatch OT assignment
             cost_matrix = torch.cdist(x_0.view(B, -1), z_batch.view(B, -1), p=2).pow(2)
-            row_ind, col_ind = cls.greedy_assignment_gpu(cost_matrix)
+            # row_ind, col_ind = cls.greedy_assignment_gpu(cost_matrix)
+            row_ind, col_ind = cls.exact_ot_assignment_cpu(cost_matrix)
             x_0 = x_0[row_ind]
             z_batch = z_batch[col_ind]
 
@@ -196,7 +220,8 @@ class ConditionalVectorField:
         else:
             raise ValueError(f"Unknown model_type: {model_type}")
 
-        return x_t, target_u, t_expand
+        # return x_t, target_u, t_expand
+        return x_t, target_u, t
 
     @staticmethod
     def compute_loss(

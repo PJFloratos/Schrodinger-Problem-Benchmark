@@ -90,12 +90,15 @@ class Trainer(BaseTrainer):
             generator=split_gen,
         )
 
+        is_toy_data = len(self.data_shape) == 1
+        num_workers = 0 if is_toy_data else 2
+
         train_dl = DataLoader(
             train_ds,
             self.batch_size,
             shuffle=True,
-            num_workers=2,
-            pin_memory=True,
+            num_workers=num_workers,
+            pin_memory=not is_toy_data,
             drop_last=True,
             generator=torch.Generator().manual_seed(
                 self.seed + SeedOffsets.TRAIN_SHUFFLE
@@ -105,8 +108,8 @@ class Trainer(BaseTrainer):
             valid_ds,
             self.batch_size,
             shuffle=False,
-            num_workers=2,
-            pin_memory=True,
+            num_workers=num_workers,
+            pin_memory=not is_toy_data,
             drop_last=True,
             generator=torch.Generator().manual_seed(
                 self.seed + SeedOffsets.TRAIN_VALID_LOADER
@@ -256,11 +259,17 @@ class Trainer(BaseTrainer):
             phase_time = time.time() - phase_start
 
             # Aggregate Outer-Loop Epoch Metrics
-            metrics = {
-                "train_loss": train_loss,
-                "valid_loss": valid_loss,
-                "phase_time_sec": phase_time,
-            }
+            if valid_loss:
+                metrics = {
+                    "train_loss": train_loss,
+                    "valid_loss": valid_loss,
+                    "phase_time_sec": phase_time,
+                }
+            else:
+                metrics = {
+                    "train_loss": train_loss,
+                    "phase_time_sec": phase_time,
+                }
 
             # Run evaluation condition
             _run_eval = (
@@ -279,9 +288,17 @@ class Trainer(BaseTrainer):
 
             # Logging
             qual_str = self._format_eval_str(metrics, _run_eval)
-            self.logger.info(
-                f"     Epoch {epoch} | Train Loss: {train_loss:.6f} | Valid Loss: {valid_loss:.6f} | {qual_str}"
-            )
+            if _run_eval:
+                _log = self.logger.info
+            else:
+                _log = self.logger.debug
+
+            if valid_loss:
+                _log(
+                    f"     Epoch {epoch} | Train Loss: {train_loss:.6f} | Valid Loss: {valid_loss:.6f} | {qual_str}"
+                )
+            else:
+                _log(f"     Epoch {epoch} | Train Loss: {train_loss:.6f} | {qual_str}")
 
             # Saving the model
             _save_model = (

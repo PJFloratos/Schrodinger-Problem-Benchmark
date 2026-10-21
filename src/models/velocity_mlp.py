@@ -9,25 +9,22 @@ import math
 class VelocityMLP(nn.Module):
     def __init__(self, d=2, hidden=128, time_dim=64, model_type="sde"):
         super().__init__()
-        if model_type not in ["sde", "minibatch", "flow_m", "ipf"]:
-            self.model_type = "sde"
-        else:
-            self.model_type = model_type
+        self.model_type = model_type
 
         # 1. Time Embedding & Encoder (Matches DSB pos_dim=16, t_enc_dim=32)
         self.time_embed = SinusoidalTimeEmbedding(dim=time_dim)
         self.time_encoder = nn.Sequential(
-            nn.Linear(time_dim, 16),
+            nn.Linear(time_dim, hidden),
             nn.LeakyReLU(),
-            nn.Linear(16, time_dim * 2),
+            nn.Linear(hidden, time_dim * 2),
             nn.LeakyReLU(),
         )
 
         # 2. Spatial Encoder (Matches DSB encoder_layers=[16], t_enc_dim=32)
         self.x_encoder = nn.Sequential(
-            nn.Linear(d, 16),
+            nn.Linear(d, hidden),
             nn.LeakyReLU(),
-            nn.Linear(16, time_dim * 2),
+            nn.Linear(hidden, time_dim * 2),
             nn.LeakyReLU(),
         )
 
@@ -41,75 +38,43 @@ class VelocityMLP(nn.Module):
         )
 
     def forward(self, x, t):
-        # return self.net(torch.cat([x, t], dim=-1))
+        # Encode spatial features
+        xemb = self.x_encoder(x)
 
         # Obtain sinusoidal representation and encode it
         t_emb = self.time_embed(t)
         temb = self.time_encoder(t_emb)
 
-        # Encode spatial features
-        xemb = self.x_encoder(x)
-
         # Concatenate encoded representations and decode
         h = torch.cat([xemb, temb], dim=-1)
+
         return self.net(h)
 
-    @torch.no_grad()
-    def generate(
-        self,
-        n_samples: int = 2000,
-        steps: int = 500,
-        device: torch.device = torch.device("cpu"),
-        return_path: bool = False,
-        t_end: float = 1.0,  # to prevent variance collapse in SDE
-        x_0: torch.Tensor = None,
-    ) -> torch.Tensor:
-        """
-        Simulates the SDE to generate samples from the standard normal prior.
-        """
-        h = 1.0 / steps
-        # x = torch.randn(n_samples, 2, device=device)
 
-        # Use provided prior points or sample new ones
-        if x_0 is None:
-            x = torch.randn(n_samples, 2, device=device)
-        else:
-            x = x_0.clone().to(device)
-            n_samples = x.shape[0]
+class EnergyMLP(nn.Module):
+    """Models a time-independent scalar potential: R^d -> R"""
 
-        # Calculate how many steps to actually execute
-        integration_steps = int(steps * t_end)
+    def __init__(self, d=2, hidden=128, time_dim=64, model_type="ebm"):
+        super().__init__()
+        self.model_type = model_type
 
-        # Store initial positions if tracking is enabled
-        if return_path:
-            trajectories = [x.clone().cpu().numpy()]
+        # 1. Spatial Encoder (Identical geometry to VelocityMLP for fair comparison)
+        self.x_encoder = nn.Sequential(
+            nn.Linear(d, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, time_dim * 2),
+            nn.SiLU(),
+        )
 
-        for i in range(integration_steps):
-            t_val = i * h
-            t_tensor = torch.full((n_samples, 1), t_val, device=device)
-            drift = self.forward(x, t_tensor)
+        # 2. Scalar Potential Decoder
+        self.net = nn.Sequential(
+            nn.Linear(time_dim * 2, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, 1),  # Scalar output
+        )
 
-            if self.model_type in ["minibatch", "flow_m"]:
-                # Forward ODE: dx = u_t(x) dt (No noise injection!)
-                x = x + h * drift
-
-            elif self.model_type == "sde":
-                # Omit noise strictly on the final integration step
-                if i < integration_steps - 1:
-                    noise = torch.randn_like(x)
-                else:
-                    noise = torch.zeros_like(x)
-
-                # Forward SDE: dx = u_t(x) dt + dW_t
-                x = x + h * drift + (h**0.5) * noise
-
-            if return_path:
-                trajectories.append(x.clone().cpu().numpy())
-
-        if return_path:
-            import numpy as np
-
-            # Stack into shape: (n_samples, steps + 1, 2)
-            return np.stack(trajectories, axis=1)
-
-        return x
+    def forward(self, x, t=None):
+        # Accepts 't' purely for API compatibility with solvers, but ignores it
+        return self.net(self.x_encoder(x))
