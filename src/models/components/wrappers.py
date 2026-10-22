@@ -47,3 +47,21 @@ class SF2MInferenceWrapper(nn.Module):
             drift = -v_hat - self.sigma * torch.sqrt((1.0 - t_b) / t_b) * eps_hat
 
         return drift
+
+
+class SCONEWrapper(torch.nn.Module):
+    """Packs the dual potentials together so the Evaluator can treat them as a single model."""
+
+    def __init__(
+        self,
+        phi_model: torch.nn.Module,
+        psi_model: torch.nn.Module,
+        sigma: float,
+        reference: str,
+    ):
+        super().__init__()
+        self.model_type = "scone"
+        self.phi = phi_model
+        self.psi = psi_model
+        self.sigma = sigma
+        self.reference = reference

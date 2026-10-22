@@ -249,7 +249,7 @@ class Evaluator:
 
         # EBM loss requires MCMC and spatial autograd. The EBMTrainer handles this.
         # We bypass it here to prevent inference_mode crashes.
-        if model.model_type == "ebm":
+        if model.model_type in ["ebm", "scone"]:
             return None
 
         gen = self._noise_gen

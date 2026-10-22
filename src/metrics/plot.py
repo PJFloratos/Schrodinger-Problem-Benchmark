@@ -132,6 +132,11 @@ def generate_and_plot(generative_model, eval_res, cfg):
                 cfg.plots_path,
                 f"{cfg.epsilon}eps_{cfg.epochs}ep_{cfg.ula_steps}ss.png",
             )
+        elif cfg.model_type in ["scone"]:
+            save_path = os.path.join(
+                cfg.plots_path,
+                f"{cfg.sigma}eps_{cfg.epochs}ep_{cfg.ula_steps}ss.png",
+            )
         else:
             save_path = os.path.join(
                 cfg.plots_path, f"{cfg.epochs}ep_{cfg.eval_sim_steps}ss.png"
@@ -161,6 +166,11 @@ def generate_and_plot(generative_model, eval_res, cfg):
             save_path = os.path.join(
                 cfg.plots_path,
                 f"{cfg.epsilon}eps_{cfg.epochs}ep_{cfg.ula_steps}ss.png",
+            )
+        elif cfg.model_type in ["scone"]:
+            save_path = os.path.join(
+                cfg.plots_path,
+                f"{cfg.sigma}eps_{cfg.epochs}ep_{cfg.ula_steps}ss.png",
             )
         else:
             save_path = os.path.join(

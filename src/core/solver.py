@@ -126,6 +126,23 @@ class EulerSampler:
                 desc=desc,
                 g_init=g_init,
             )
+        elif self.model_type == "scone":
+            out = self._generate_scone(
+                model=model,
+                shape=shape,
+                x_init=x_init,
+                n_samples=n_samples,
+                device=device,
+                batch_size=batch_size,
+                verbose=verbose,
+                amp_dtype=amp_dtype,
+                reference=model.reference,
+                drop_last_noise=drop_last_noise,
+                desc=desc,
+                g_init=g_init,
+                g_step=g_step,
+                **solver_kwargs,
+            )
         else:
             out = self._generate_standard(
                 model=model,
@@ -377,4 +394,106 @@ class EulerSampler:
 
         if pbar:
             pbar.close()
+        return out
+
+    def _generate_scone(
+        self,
+        model,
+        shape,
+        x_init,
+        n_samples,
+        device,
+        batch_size,
+        drop_last_noise,
+        verbose,
+        reference,
+        amp_dtype,
+        desc,
+        g_init,
+        g_step,
+        **kwargs,
+    ) -> List[torch.Tensor]:
+        """Strategy: Joint Unadjusted Langevin Algorithm (SCONE Evaluation)"""
+        from src.core.dynamics import ConditionalVectorField
+
+        epsilon = kwargs.get("epsilon", 0.1)  # Fallback to prevent crash
+        eta_max = kwargs.get("eta_max_infer", 5e-3)
+        eta_min = kwargs.get("eta_min_infer", 1e-4)
+        spatial_clip = kwargs.get("spatial_clip", 10.0)
+        ebm_steps = kwargs.get("ebm_steps", 1000)
+
+        # In SCONE, sigma is explicitly bundled inside the model wrapper
+        sigma = getattr(model, "sigma", 1.0)
+
+        pbar = (
+            tqdm(
+                total=math.ceil(n_samples / batch_size) * ebm_steps,
+                ascii=True,
+                desc=desc,
+                leave=False,
+            )
+            if verbose
+            else None
+        )
+
+        out = []
+        for start in range(0, n_samples, batch_size):
+            n = min(batch_size, n_samples - start)
+
+            # X is the fixed latent prior. It MUST NOT move during generation.
+            if x_init is not None:
+                x = x_init[start : start + n].clone().to(device)
+            else:
+                x = torch.randn(n, *shape, device=device, generator=g_init)
+
+            # Initialize Y from the Reference Measure R_01
+            y = x + sigma * torch.randn(
+                x.shape, device=device, dtype=x.dtype, generator=g_init
+            )
+
+            # noise_x = torch.empty_like(x)
+            noise_y = torch.empty_like(y)
+
+            for i in range(ebm_steps):
+                progress = i / max(1, ebm_steps - 1)
+                current_eta = eta_max * (eta_min / eta_max) ** progress
+                drop_noise = drop_last_noise and (i == ebm_steps - 1)
+
+                y = y.detach().requires_grad_(True)
+                with torch.enable_grad():
+                    with torch.autocast(
+                        device_type=device.type, dtype=amp_dtype, enabled=self.use_amp
+                    ):
+                        psi = model.psi(y)
+                    grad_psi = torch.autograd.grad(psi.sum(), y, create_graph=False)[0]
+
+                if spatial_clip > 0:
+                    grad_psi = grad_psi.clamp(-spatial_clip, spatial_clip)
+
+                if reference == "brownian":
+                    _, ref_y = ConditionalVectorField.get_reference_scores(
+                        x, y, sigma, reference
+                    )
+                else:
+                    raise NotImplementedError(
+                        f"Evaluation for {reference} requires the score network."
+                    )
+
+                drift_y = grad_psi + ref_y
+                y = y.detach() + 0.5 * current_eta * drift_y
+
+                if not drop_noise:
+                    noise_y.normal_(generator=g_step)
+                    y += math.sqrt(current_eta) * noise_y
+
+                if pbar:
+                    pbar.update(1)
+
+            # Forward direction translates Prior to Data. So we return Y.
+            out.append(y.detach())
+
+        if pbar:
+            pbar.close()
+
+        # return torch.cat(out, dim=0)
         return out

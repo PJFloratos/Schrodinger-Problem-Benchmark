@@ -53,6 +53,12 @@ class SeedOffsets:
     # --- EBM Trainer Streams (1400+) ---
     EBM_BUFFER_INIT = 1400
 
+    # --- SCONE Trainer Streams (1500+) ---
+    SCONE_TRAIN_NOISE = 1500
+    SCONE_SHUFFLE = 1501
+    SCONE_BUFFER_INIT = 1502
+    SCONE_EVAL = 1503
+
 
 def set_all_seeds(seed: int):
     """Locks down all RNGs and forces deterministic hardware execution."""

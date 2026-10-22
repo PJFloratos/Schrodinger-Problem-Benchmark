@@ -89,6 +89,30 @@ class ConditionalVectorField:
         return loss_v, loss_eps
 
     # =========================================================================
+    # SCONE Specific Math
+    # =========================================================================
+
+    @staticmethod
+    def get_reference_scores(
+        x: torch.Tensor,
+        y: torch.Tensor,
+        sigma: float = 1.0,
+        reference: str = "brownian",
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Retrieves analytical joint scores \nabla_x \log R_{01} and \nabla_y \log R_{01}.
+        """
+        if reference == "brownian":
+            score_x = (y - x) / (sigma**2)
+            score_y = (x - y) / (sigma**2)
+            return score_x, score_y
+
+        raise NotImplementedError(
+            f"Analytical scores for reference '{reference}' are not supported. "
+            "Requires a pre-trained Denoising Score Matching network (s_omega)."
+        )
+
+    # =========================================================================
     # Closed-Form Interpolants
     # =========================================================================
 

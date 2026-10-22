@@ -6,6 +6,7 @@ from src.training import (
     IMFTrainer,
     SF2MTrainer,
     EBMTrainer,
+    SCONETrainer,
 )
 from src.metrics import Evaluator
 from src.metrics.plot import generate_and_plot
@@ -105,6 +106,8 @@ class Pipeline:
             return self._run_sf2m()
         elif self.cfg.model_type == "ebm":
             return self._run_ebm()
+        elif self.cfg.model_type == "scone":
+            return self._run_scone()
         else:
             return self._run_standard()
 
@@ -134,7 +137,9 @@ class Pipeline:
             }
 
         elif isinstance(self.cfg, Toy2dConfig):
-            model_cls = EnergyMLP if self.cfg.model_type == "ebm" else VelocityMLP
+            model_cls = (
+                EnergyMLP if self.cfg.model_type in ["ebm", "scone"] else VelocityMLP
+            )
             return model_cls, {"d": self.cfg.input_dim, "hidden": self.cfg.hidden_dim}
 
         return SimpleUNet, {"channels": getattr(self.cfg, "input_channels", 1)}
@@ -395,6 +400,54 @@ class Pipeline:
             epochs=self.cfg.epochs,
             save_per=self.cfg.save_interval,
             save_path=self.cfg.models_path,
+            eval_callback=self._eval_callback,
+            eval_per=self.cfg.eval_per,
+        )
+
+        return gen_model, metrics
+
+    def _run_scone(self) -> torch.nn.Module:
+        phi_model = self._build_model("ebm", SeedOffsets.GEN_INIT, name="phi_model")
+        psi_model = self._build_model("ebm", SeedOffsets.AUX_INIT, name="psi_model")
+
+        self.logger.info(f"SCONE Dual Models deployed on: {self.cfg.device}")
+
+        phi_opt = optim.AdamW(
+            phi_model.parameters(),
+            lr=self.cfg.learning_rate,
+            weight_decay=self.cfg.weight_decay,
+        )
+        psi_opt = optim.AdamW(
+            psi_model.parameters(),
+            lr=self.cfg.learning_rate,
+            weight_decay=self.cfg.weight_decay,
+        )
+
+        trainer = SCONETrainer(
+            phi_model=phi_model,
+            psi_model=psi_model,
+            dataset=self.train_dataset,
+            batch_size=self.cfg.batch_size,
+            phi_opt=phi_opt,
+            psi_opt=psi_opt,
+            metric_logger=self.metric_logger,
+            seed=self.cfg.seed,
+            device=self.cfg.device,
+            sigma=getattr(self.cfg, "sigma", 1.0),
+            reference=self.cfg.reference,
+            ula_steps=self.cfg.ula_steps,
+            ula_step_size=self.cfg.ula_step_size,
+            eta_min=getattr(self.cfg, "eta_min_infer", 1e-4),
+            spatial_clip=self.cfg.spatial_clip,
+            l2_reg=self.cfg.l2_reg,
+            use_amp=self.cfg.use_amp,
+            use_ema=self.cfg.use_ema,
+            use_compile=False,  # Disable compile to protect double-autograd
+        )
+
+        gen_model, metrics = trainer.fit(
+            epochs=self.cfg.epochs,
+            save_per=self.cfg.save_interval,
             eval_callback=self._eval_callback,
             eval_per=self.cfg.eval_per,
         )

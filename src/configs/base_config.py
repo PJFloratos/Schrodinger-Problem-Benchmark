@@ -7,8 +7,25 @@ from typing import Optional
 """
 TODO:
     - Standarize for argitrary Brownian Motion reference
+    - Standarize configs and seeds
     - Update for OU reference
-    - Standarize configs
+    - Add the fluid dynamic models
+    - Read the benchmark paper (implement and extend it)
+
+    (Mathematical Verification)
+    - Run the solvers against the real SB
+        - for Brownian Motion across different sigma
+        - for OU process
+        - for other processes
+    - Can examine the PCA penalty of the convergence
+
+    (Hypothesis)
+    - Run the solvers in the MNIST and CIFAR10 datasets
+
+    (Further Steps)
+    - Discuss the SP in the discrete setting
+    - Discuss the SP in infinite dimensions
+    - Discuss the unconstraint SP
 """
 
 
@@ -34,12 +51,13 @@ class BaseConfig:
 
     # --- Training ---
     model_type: str = (
-        "ebm"  # in [sde, minibatch, flow_m, ipf, imf, sf2m, lightsbm, ebm, scone]
+        "scone"  # in [sde, minibatch, flow_m, ipf, imf, sf2m, lightsbm, ebm, scone]
     )
-    model_name: str = "EBM"  # in [SDE, ODE, FM, IPF, IMF, SF2M, LSBM, EBM, SCONE]
+    model_name: str = "SCONE"  # in [SDE, ODE, FM, IPF, IMF, SF2M, LSBM, EBM, SCONE]
+    reference: str = "brownian"  # in ['brownian', 'ou', 'custom']
     ot_method: str = "minibatch"  # in [sinkhorn, minibatch, greedy]
     n_potentials: int = 1000
-    epochs: int = 100
+    epochs: int = 200
     batch_size: int = 512
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
@@ -49,19 +67,20 @@ class BaseConfig:
     refresh_every: int = 500
     num_cache_batches: int = 10
     save_interval: int = 500
-    eval_per: int = 200
+    eval_per: int = 20
     use_compile: bool = True
     use_amp: bool = False
     use_ema: bool = False
 
     # EBM: Lower eps -> more ula_steps, fewer l2_reg
 
-    # --- EBM Specific ---
+    # --- EBM/SCONE Specific ---
+    sigma: float = 1
     epsilon: float = 0.001  # Entropy penalty scale (reference variance)
-    ula_steps: int = 300  # Training Langevin MCMC steps
-    ula_step_size: float = 1e-3  # Langevin step size (eta)
-    spatial_clip: float = 10.0  # Guardrail: spatial gradient clip
-    l2_reg: float = 0.0  # Guardrail: potential magnitude penalty
+    ula_steps: int = 30  # Training Langevin MCMC steps
+    ula_step_size: float = 5e-3  # Langevin step size (eta)
+    spatial_clip: float = 50.0  # Guardrail: spatial gradient clip
+    l2_reg: float = 1e-4  # Guardrail: potential magnitude penalty
     cold_start: float = 0.02
     eta_min_infer: float = 1e-5
 
