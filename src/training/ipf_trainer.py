@@ -58,6 +58,7 @@ class IPFTrainer(BaseTrainer):
             seed=seed,
             device=device,
             metric_logger=metric_logger,
+            sigma=sigma,
             use_amp=use_amp,
         )
 
@@ -67,7 +68,6 @@ class IPFTrainer(BaseTrainer):
         self.h = 1.0 / sde_steps
         self.num_cache_batches = num_cache_batches
         self.refresh_every = refresh_every
-        self.sigma = sigma
         self.grad_clip = grad_clip
         self.lr_decay = lr_decay
         self.lr_final_ratio = lr_final_ratio
@@ -101,14 +101,12 @@ class IPFTrainer(BaseTrainer):
             model=forward_model,
             ema_mu=ema_mu,
             use_ema=use_ema,
-            sigma=self.sigma,
             create_sampler=True,
         )
         self.b_model_base, self.b_model, self.b_ema, self.b_sampler = self._setup_model(
             model=backward_model,
             ema_mu=ema_mu,
             use_ema=use_ema,
-            sigma=self.sigma,
             create_sampler=True,
         )
 

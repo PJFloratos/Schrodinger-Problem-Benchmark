@@ -35,6 +35,7 @@ class Trainer(BaseTrainer):
         opt: torch.optim.Optimizer,
         metric_logger: Any,
         seed: int,
+        sigma: float = 1.0,
         train_prop: float = 0.8,
         grad_clip: Optional[float] = 1.0,
         device: torch.device = torch.device("cpu"),
@@ -49,6 +50,7 @@ class Trainer(BaseTrainer):
             seed=seed,
             device=device,
             metric_logger=metric_logger,
+            sigma=sigma,
             use_amp=use_amp,
         )
 
@@ -146,7 +148,7 @@ class Trainer(BaseTrainer):
                 model_type=model_type,
                 z_batch=z_batch,
                 t=t,
-                sigma=getattr(self.model_base, "sigma", 1.0),
+                sigma=self.sigma,
                 gen=gen,
                 memory_format=self.memory_format,
             )

@@ -6,7 +6,6 @@ from typing import Optional
 
 """
 TODO:
-    - Standarize for argitrary Brownian Motion reference
     - Standarize configs and seeds
     - Update for OU reference
     - Add the fluid dynamic models
@@ -51,18 +50,18 @@ class BaseConfig:
 
     # --- Training ---
     model_type: str = (
-        "scone"  # in [sde, minibatch, flow_m, ipf, imf, sf2m, lightsbm, ebm, scone]
+        "imf"  # in [sde, minibatch, flow_m, ipf, imf, sf2m, lightsbm, ebm, scone]
     )
-    model_name: str = "SCONE"  # in [SDE, ODE, FM, IPF, IMF, SF2M, LSBM, EBM, SCONE]
+    model_name: str = "IMF"  # in [SDE, ODE, FM, IPF, IMF, SF2M, LSBM, EBM, SCONE]
     reference: str = "brownian"  # in ['brownian', 'ou', 'custom']
     ot_method: str = "minibatch"  # in [sinkhorn, minibatch, greedy]
     n_potentials: int = 1000
-    epochs: int = 200
+    epochs: int = 5
     batch_size: int = 512
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
     grad_clip: float = 1.0
-    sim_steps: int = 100
+    sim_steps: int = 200
     num_iter: int = 5000
     refresh_every: int = 500
     num_cache_batches: int = 10
@@ -75,8 +74,7 @@ class BaseConfig:
     # EBM: Lower eps -> more ula_steps, fewer l2_reg
 
     # --- EBM/SCONE Specific ---
-    sigma: float = 1
-    epsilon: float = 0.001  # Entropy penalty scale (reference variance)
+    sigma: float = 0.1
     ula_steps: int = 30  # Training Langevin MCMC steps
     ula_step_size: float = 5e-3  # Langevin step size (eta)
     spatial_clip: float = 50.0  # Guardrail: spatial gradient clip
@@ -85,7 +83,7 @@ class BaseConfig:
     eta_min_infer: float = 1e-5
 
     # --- Evaluation ---
-    eval_sim_steps: int = 100
+    eval_sim_steps: int = 200
     track_gen_samples: int = 512  # Small batch for fast mid-training tracking
     eval_gen_samples: int = 4000  # Massive batch for final end-of-training metric
 

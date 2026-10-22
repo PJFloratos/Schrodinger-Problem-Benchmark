@@ -155,7 +155,7 @@ class ConditionalVectorField:
             # Independent endpoints relaxation: Prior is standard Gaussian
             eps = cls._randn_like(z_batch, gen, memory_format)
 
-            x_t = t_expand * z_batch + torch.sqrt(1.0 - t_expand) * eps
+            x_t = t_expand * z_batch + sigma * torch.sqrt(1.0 - t_expand) * eps
             target_u = (z_batch - x_t) / (1.0 - t_expand)
 
         elif model_type == "flow_m":

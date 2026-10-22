@@ -21,6 +21,7 @@ class BaseTrainer(ABC):
         seed: int,
         device: torch.device,
         metric_logger: Any,  # e.g., WandB or TensorBoard writer
+        sigma: float = 1.0,
         use_amp: bool = True,
     ):
         self.dataset = dataset
@@ -28,6 +29,7 @@ class BaseTrainer(ABC):
         self.seed = seed
         self.device = device
         self.metric_logger = metric_logger
+        self.sigma = sigma
 
         # 1. Global channels_last & Hardware Settings
         # Sniff dataset shape safely (handles tuples/lists returned by Dataset)
@@ -71,7 +73,6 @@ class BaseTrainer(ABC):
         model: nn.Module,
         ema_mu: float,
         use_ema: bool,
-        sigma: Optional[float] = None,
         create_sampler: bool = False,
         use_compile: bool = True,
     ) -> Tuple[nn.Module, nn.Module, Optional[EMAHelper], Optional[nn.Module]]:
@@ -82,8 +83,8 @@ class BaseTrainer(ABC):
         # 1. Place Base Model
         model_base = model.to(self.device, memory_format=self.memory_format)
 
-        if sigma is not None:
-            model_base.sigma = sigma
+        if self.sigma is not None:
+            model_base.sigma = self.sigma
 
         # 2. Setup EMA
         if use_ema:

@@ -73,6 +73,7 @@ class IMFTrainer(BaseTrainer):
             seed=seed,
             device=device,
             metric_logger=metric_logger,
+            sigma=sigma,
             use_amp=use_amp,
         )
 
@@ -82,7 +83,6 @@ class IMFTrainer(BaseTrainer):
         self.h = 1.0 / sde_steps
         self.num_cache_batches = num_cache_batches
         self.refresh_every = refresh_every
-        self.sigma = sigma
         self.eps = eps
         self.first_coupling = first_coupling
         self.grad_clip = grad_clip
@@ -117,14 +117,12 @@ class IMFTrainer(BaseTrainer):
             model=forward_model,
             ema_mu=ema_mu,
             use_ema=use_ema,
-            sigma=sigma,
             create_sampler=True,
         )
         self.b_model_base, self.b_model, self.b_ema, self.b_sampler = self._setup_model(
             model=backward_model,
             ema_mu=ema_mu,
             use_ema=use_ema,
-            sigma=sigma,
             create_sampler=True,
         )
 

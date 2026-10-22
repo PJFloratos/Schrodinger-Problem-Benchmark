@@ -41,12 +41,12 @@ class Pipeline:
         solver_kwargs = {}
         if self.cfg.model_type == "ebm":
             # Note: We scale the spatial clip here just like the EBMTrainer did
-            epsilon = getattr(self.cfg, "epsilon", 0.1)
+            sigma = getattr(self.cfg, "sigma", 0.1)
             solver_kwargs = {
-                "epsilon": epsilon,
+                "sigma": sigma,
                 "eta_max_infer": getattr(self.cfg, "ula_step_size", 1e-3),
                 "eta_min_infer": getattr(self.cfg, "eta_min_infer", 1e-4),
-                "spatial_clip": getattr(self.cfg, "spatial_clip", 10.0) / epsilon,
+                "spatial_clip": getattr(self.cfg, "spatial_clip", 10.0) / (sigma**2),
                 "ebm_steps": getattr(self.cfg, "ebm_steps", 1000),
             }
 
@@ -133,7 +133,7 @@ class Pipeline:
             return LightSBM, {
                 "dim": self.cfg.input_dim,
                 "n_potentials": self.cfg.n_potentials,
-                "epsilon": getattr(self.cfg, "epsilon", 0.1),
+                "epsilon": getattr(self.cfg, "sigma", 0.1) ** 2,
             }
 
         elif isinstance(self.cfg, Toy2dConfig):
@@ -212,6 +212,7 @@ class Pipeline:
             metric_logger=self.metric_logger,
             seed=self.cfg.seed,
             device=self.cfg.device,
+            sigma=self.cfg.sigma,
             grad_clip=self.cfg.grad_clip,
             use_amp=self.cfg.use_amp,
             use_ema=self.cfg.use_ema,
@@ -253,6 +254,7 @@ class Pipeline:
             device=self.cfg.device,
             metric_logger=self.metric_logger,
             seed=self.cfg.seed,
+            sigma=self.cfg.sigma,
             batch_size=self.cfg.batch_size,
             sde_steps=self.cfg.sim_steps,
             num_cache_batches=self.cfg.num_cache_batches,
@@ -298,6 +300,7 @@ class Pipeline:
             device=self.cfg.device,
             metric_logger=self.metric_logger,
             seed=self.cfg.seed,
+            sigma=self.cfg.sigma,
             batch_size=self.cfg.batch_size,
             sde_steps=self.cfg.sim_steps,
             num_cache_batches=self.cfg.num_cache_batches,
@@ -343,6 +346,7 @@ class Pipeline:
             device=self.cfg.device,
             metric_logger=self.metric_logger,
             seed=self.cfg.seed,
+            sigma=self.cfg.sigma,
             batch_size=self.cfg.batch_size,
             sde_steps=self.cfg.sim_steps,
             num_cache_batches=self.cfg.num_cache_batches,
@@ -383,7 +387,7 @@ class Pipeline:
             metric_logger=self.metric_logger,
             seed=self.cfg.seed,
             device=self.cfg.device,
-            epsilon=self.cfg.epsilon,
+            sigma=self.cfg.sigma,
             ula_steps=self.cfg.ula_steps,
             ula_step_size=self.cfg.ula_step_size,
             spatial_clip=self.cfg.spatial_clip,
@@ -433,7 +437,7 @@ class Pipeline:
             metric_logger=self.metric_logger,
             seed=self.cfg.seed,
             device=self.cfg.device,
-            sigma=getattr(self.cfg, "sigma", 1.0),
+            sigma=self.cfg.sigma,
             reference=self.cfg.reference,
             ula_steps=self.cfg.ula_steps,
             ula_step_size=self.cfg.ula_step_size,

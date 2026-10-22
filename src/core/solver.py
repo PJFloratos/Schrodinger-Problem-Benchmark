@@ -315,7 +315,7 @@ class EulerSampler:
         **kwargs,
     ) -> List[torch.Tensor]:
         """Strategy: Unadjusted Langevin Algorithm (ULA)"""
-        epsilon = kwargs.get("epsilon", None)
+        sigma = kwargs.get("sigma", 1.0)
         eta_max = kwargs.get("eta_max_infer", None)
         eta_min = kwargs.get("eta_min_infer", None)
         spatial_clip = kwargs.get("spatial_clip", None)
@@ -324,8 +324,8 @@ class EulerSampler:
         missing = [
             k
             for k, v in zip(
-                ["epsilon", "eta_max_infer", "eta_min_infer", "spatial_clip"],
-                [epsilon, eta_max, eta_min, spatial_clip],
+                ["sigma", "eta_max_infer", "eta_min_infer", "spatial_clip"],
+                [sigma, eta_max, eta_min, spatial_clip],
             )
             if v is None
         ]
@@ -334,7 +334,7 @@ class EulerSampler:
                 f"EBM missing hyperparams: {missing}. Ensure they are passed via solver_kwargs."
             )
 
-        target_horizon = 5.0 * epsilon
+        target_horizon = 5.0 * (sigma**2)
         if eta_max > eta_min:
             required_steps = int(
                 target_horizon * math.log(eta_max / eta_min) / (eta_max - eta_min)
@@ -362,7 +362,7 @@ class EulerSampler:
                 if x_init is not None
                 else torch.randn(n, *shape, device=device, generator=g_init)
             )
-            y = x + math.sqrt(epsilon) * torch.randn(
+            y = x + sigma * torch.randn(
                 x.shape, device=device, dtype=x.dtype, generator=g_init
             )
 
@@ -379,7 +379,7 @@ class EulerSampler:
                 if spatial_clip > 0:
                     grad_psi = grad_psi.clamp(-spatial_clip, spatial_clip)
 
-                drift = grad_psi + (x - y) / epsilon
+                drift = grad_psi + (x - y) / (sigma**2)
                 y = y.detach() + 0.5 * current_eta * drift
 
                 if not drop_noise:
@@ -416,7 +416,6 @@ class EulerSampler:
         """Strategy: Joint Unadjusted Langevin Algorithm (SCONE Evaluation)"""
         from src.core.dynamics import ConditionalVectorField
 
-        epsilon = kwargs.get("epsilon", 0.1)  # Fallback to prevent crash
         eta_max = kwargs.get("eta_max_infer", 5e-3)
         eta_min = kwargs.get("eta_min_infer", 1e-4)
         spatial_clip = kwargs.get("spatial_clip", 10.0)
@@ -495,5 +494,4 @@ class EulerSampler:
         if pbar:
             pbar.close()
 
-        # return torch.cat(out, dim=0)
         return out

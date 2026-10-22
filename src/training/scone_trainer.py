@@ -53,6 +53,7 @@ class SCONETrainer(BaseTrainer):
             seed=seed,
             device=device,
             metric_logger=metric_logger,
+            sigma=sigma,
             use_amp=use_amp,
         )
         self.phi_opt = phi_opt
@@ -61,7 +62,6 @@ class SCONETrainer(BaseTrainer):
         self.grad_clip = grad_clip
 
         self.reference = reference
-        self.sigma = sigma
         self.eta = ula_step_size
         self.eta_min = eta_min
         self.ula_steps = ula_steps

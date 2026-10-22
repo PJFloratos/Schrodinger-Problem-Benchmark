@@ -36,11 +36,11 @@ class SF2MTrainer(BaseTrainer):
         device: torch.device,
         metric_logger: Any,
         seed: int,
+        sigma: float = 1.0,
         batch_size: int = 256,
         sde_steps: int = 20,
         num_cache_batches: int = None,
         ot_method: str = "minibatch",  # 'minibatch' | 'sinkhorn' | 'greedy'
-        sigma: float = 1.0,
         eps: float = 1e-4,
         grad_clip: float = 2.0,
         ema_mu: float = 0.999,
@@ -58,6 +58,7 @@ class SF2MTrainer(BaseTrainer):
             seed=seed,
             device=device,
             metric_logger=metric_logger,
+            sigma=sigma,
             use_amp=use_amp,
         )
 
@@ -66,7 +67,6 @@ class SF2MTrainer(BaseTrainer):
         self.sde_steps = sde_steps
         self.h = 1.0 / sde_steps
         self.ot_method = ot_method
-        self.sigma = sigma
         self.eps = eps
         self.grad_clip = grad_clip
         self.lr_decay = lr_decay
@@ -105,7 +105,6 @@ class SF2MTrainer(BaseTrainer):
             model=u_model,
             ema_mu=ema_mu,
             use_ema=use_ema,
-            sigma=sigma,
             create_sampler=True,
         )
         self.s_model_base, self.s_model, self.ema_s, self.s_sampler = self._setup_model(

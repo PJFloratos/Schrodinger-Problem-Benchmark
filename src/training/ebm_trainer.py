@@ -22,7 +22,7 @@ class EBMTrainer(Trainer):
         opt: torch.optim.Optimizer,
         metric_logger: Any,
         seed: int,
-        epsilon: float = 0.1,
+        sigma: float = 1.0,
         ula_steps: int = 50,
         ula_step_size: float = 1e-3,
         spatial_clip: float = 10.0,
@@ -39,15 +39,15 @@ class EBMTrainer(Trainer):
             batch_size=batch_size,
             opt=opt,
             metric_logger=metric_logger,
+            sigma=sigma,
             seed=seed,
             **kwargs,
         )
-        self.epsilon = epsilon
         self.eta = ula_step_size
         self.eta_min = eta_min
         self.ula_steps = ula_steps
         # Scale the clip dynamically: weaker prior (high eps) requires larger neural gradients
-        self.spatial_clip = spatial_clip / epsilon
+        self.spatial_clip = spatial_clip / (sigma**2)
         self.l2_reg = l2_reg
         self.ebm_steps = ebm_steps
         self.cold_start = cold_start
@@ -63,9 +63,9 @@ class EBMTrainer(Trainer):
         self.replay_buffer_x = torch.randn(
             shape, device=self.device, dtype=dtype, generator=g_init
         )
-        self.replay_buffer_y = self.replay_buffer_x + math.sqrt(
-            self.epsilon
-        ) * torch.randn(shape, device=self.device, dtype=dtype, generator=g_init)
+        self.replay_buffer_y = self.replay_buffer_x + self.sigma * torch.randn(
+            shape, device=self.device, dtype=dtype, generator=g_init
+        )
 
     @torch.no_grad()
     def _generate_fake_samples(
@@ -94,7 +94,7 @@ class EBMTrainer(Trainer):
                 (n_cold, *sample_shape), device=self.device, dtype=dtype, generator=gen
             )
             x_fake[cold] = xc
-            y_fake[cold] = xc + math.sqrt(self.epsilon) * torch.randn(
+            y_fake[cold] = xc + self.sigma * torch.randn(
                 xc.shape, device=self.device, dtype=dtype, generator=gen
             )
 
@@ -125,7 +125,7 @@ class EBMTrainer(Trainer):
             if self.spatial_clip > 0:
                 grad_psi = grad_psi.clamp(-self.spatial_clip, self.spatial_clip)
 
-            drift = grad_psi + (x_fake - y_fake) / self.epsilon
+            drift = grad_psi + (x_fake - y_fake) / (self.sigma**2)
 
             # Fill the pre-allocated buffer with standard normal noise
             noise_buffer.normal_(generator=gen)
