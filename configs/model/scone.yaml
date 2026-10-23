@@ -1,0 +1,11 @@
+name: "SCONE"
+type: "scone"
+
+ula_steps: 30
+ula_step_size: 5e-3
+spatial_clip: 50.0
+l2_reg: 1e-4
+cold_start: 0.02
+eta_min_infer: 1e-5
+ebm_steps: 1000
+save_interval: 500

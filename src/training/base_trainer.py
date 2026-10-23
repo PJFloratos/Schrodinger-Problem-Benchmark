@@ -1,6 +1,6 @@
 from src.core.dynamics import ConditionalVectorField
 from src.models.components import EMAHelper
-from src.utils.seed import SeedOffsets
+from src.utils.seed import derive_seed
 
 import torch
 import torch.nn as nn
@@ -110,15 +110,16 @@ class BaseTrainer(ABC):
 
         return model_base, model_compiled, ema_helper, sampler_compiled
 
-    def _init_cache_dataloader(self, shuffle_offset: int) -> None:
+    def _init_cache_dataloader(self, shuffle_context: str) -> None:
         """Initializes the infinite data stream used by cache-based trainers (IPF, IMF, SF2M)."""
-        shuffle_gen = torch.Generator().manual_seed(self.seed + shuffle_offset)
         self.dl = DataLoader(
             self.dataset,
             batch_size=self.batch_size,
             shuffle=True,
             drop_last=True,
-            generator=shuffle_gen,
+            generator=torch.Generator().manual_seed(
+                derive_seed(self.seed, shuffle_context)
+            ),
         )
         self._data_iter = self._repeater(self.dl)
 
@@ -194,8 +195,7 @@ class BaseTrainer(ABC):
         model.eval()
 
         gen = self.probe_gen
-        # Use a unified offset
-        gen.manual_seed(self.seed + SeedOffsets.IMF_PROBE_NOISE)
+        gen.manual_seed(derive_seed(self.seed, "probe_noise"))
 
         # Draw identical batch indices before and after refresh
         idx = torch.randint(

@@ -1,0 +1,6 @@
+name: "8Gaussians"   # in [SwissRoll, Moons, Checkerboard, 8Gaussians]
+type: "8gaussians"   # in [swiss_roll, moons, checkerboard, 8gaussians]
+
+train_samples: 10000
+test_samples: 2000
+input_dim: 2

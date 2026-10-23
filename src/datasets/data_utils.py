@@ -1,19 +1,25 @@
+from omegaconf import DictConfig
 from src.datasets import Toy2DDataset, MNISTDataset, CIFAR10Dataset
-from src.configs import BaseConfig, Toy2dConfig, MNISTConfig, CIFAR10Config
 
 
-def get_dataset(cfg: BaseConfig):
-    """Initialize the correct dataset based on config type."""
-    if isinstance(cfg, Toy2dConfig):
-        train = Toy2DDataset(n_samples=cfg.train_samples, dataset_type=cfg.dataset_type)
-        test = Toy2DDataset(n_samples=cfg.test_samples, dataset_type=cfg.dataset_type)
-    elif isinstance(cfg, MNISTConfig):
+def get_dataset(cfg: DictConfig):
+    """Initialize the correct dataset based on the Hydra configuration."""
+    dataset_name = cfg.dataset.name
+
+    if dataset_name == "8Gaussians":
+        train = Toy2DDataset(
+            n_samples=cfg.dataset.train_samples, dataset_type=cfg.dataset.type
+        )
+        test = Toy2DDataset(
+            n_samples=cfg.dataset.test_samples, dataset_type=cfg.dataset.type
+        )
+    elif dataset_name == "MNIST":
         train = MNISTDataset(train=True)
         test = MNISTDataset(train=False)
-    elif isinstance(cfg, CIFAR10Config):
+    elif dataset_name == "CIFAR10":
         train = CIFAR10Dataset(train=True)
         test = CIFAR10Dataset(train=False)
     else:
-        raise ValueError(f"Unknown configuration type: {type(cfg)}")
+        raise ValueError(f"Unknown dataset name: {dataset_name}")
 
     return train, test

@@ -1,0 +1,65 @@
+defaults:
+  - dataset: toy2d
+  - model: ebm
+  - _self_
+
+# --- Reproducibility & Hardware ---
+seed: 999
+eval_seed: 9999
+device: "cpu"
+
+use_amp: false
+use_ema: false
+use_compile: false
+
+# --- Global Physics & Training Defaults ---
+reference: "brownian"   # in ['brownian', 'ou', 'custom']
+sigma: 0.5
+epochs: 100
+batch_size: 512
+learning_rate: 1e-3
+weight_decay: 1e-4
+grad_clip: 1.0
+
+# --- Global Evaluation Defaults ---
+eval_per: 20
+save_interval: 500
+eval_sim_steps: 200
+track_gen_samples: 512
+eval_gen_samples: 4000
+
+# --- Dynamic Model Architectures ---
+hidden_dim: 128
+time_dim: 64
+
+# --- Paths  ---
+base_plot_path: "./plots"
+base_model_path: "./models"
+base_log_path: "./logs"
+
+plots_path: "${base_plot_path}/${dataset.name}/${model.name}"
+models_path: "${base_model_path}/${dataset.name}/${model.name}"
+logs_path: "${base_log_path}/${dataset.name}/${model.name}"
+
+
+#################################################################
+# TODO:
+#     - Update for OU reference
+#     - Add the fluid dynamic models
+#     - Read the benchmark paper (implement and extend it)
+#
+#     (Mathematical Verification)
+#     - Run the solvers against the real SB
+#         - for Brownian Motion across different sigma
+#         - for OU process
+#         - for other processes
+#     - Can examine the PCA penalty of the convergence
+#
+#     (Hypothesis)
+#     - Run the solvers in the MNIST and CIFAR10 datasets
+#
+#     (Further Steps)
+#     - Discuss the SP in the discrete setting
+#     - Discuss the SP in infinite dimensions
+#     - Discuss the unconstraint SP
+#################################################################

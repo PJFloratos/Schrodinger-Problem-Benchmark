@@ -1,0 +1,8 @@
+name: "SF2M"
+type: "sf2m"
+ot_method: "minibatch"   # in [sinkhorn, minibatch, greedy]
+
+sim_steps: 200
+num_iter: 5000
+num_cache_batches: 10
+save_interval: 500

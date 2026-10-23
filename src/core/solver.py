@@ -32,8 +32,17 @@ class EulerSampler:
     ) -> Optional[torch.Generator]:
         if isinstance(seed_input, torch.Generator):
             return seed_input
+
         if seed_input is not None:
-            return torch.Generator(device=device).manual_seed(seed_input)
+            dev = torch.device(device)
+            try:
+                return torch.Generator(device=dev).manual_seed(seed_input)
+            except RuntimeError as e:
+                # Graceful fallback for local machines with broken/missing CUDA drivers
+                if dev.type == "cuda":
+                    return torch.Generator(device="cpu").manual_seed(seed_input)
+                raise e
+
         return None
 
     @staticmethod

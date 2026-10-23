@@ -2,7 +2,7 @@ from src.training.base_trainer import BaseTrainer
 from src.core.dynamics import ConditionalVectorField
 from src.core.solver import EulerSampler
 from src.models.components import EMAHelper
-from src.utils.seed import SeedOffsets
+from src.utils.seed import derive_seed
 from src.utils import save_model, text_logger
 
 import torch
@@ -92,21 +92,21 @@ class IMFTrainer(BaseTrainer):
 
         # DataLoader shuffling (must be a CPU generator).
         self.shuffle_gen = torch.Generator()
-        self.shuffle_gen.manual_seed(self.seed + SeedOffsets.IMF_SHUFFLE)
+        self.shuffle_gen.manual_seed(derive_seed(self.seed, "imf_shuffle"))
 
         # Coupling-construction noise: one continuous stream, touched by nothing else.
         self.noise_gen = torch.Generator(device=self.device)
-        self.noise_gen.manual_seed(self.seed + SeedOffsets.IMF_PAIR_NOISE)
+        self.noise_gen.manual_seed(derive_seed(self.seed, "imf_pair_noise"))
 
         # Minibatch indices into the pair cache.
         self.perm_gen = torch.Generator(device=self.device)
-        self.perm_gen.manual_seed(self.seed + SeedOffsets.IMF_PAIR_PERM)
+        self.perm_gen.manual_seed(derive_seed(self.seed, "imf_pair_perm"))
 
         # Fresh (t, z) at every gradient step.
         self.bridge_gen = torch.Generator(device=self.device)
-        self.bridge_gen.manual_seed(self.seed + SeedOffsets.IMF_BRIDGE_NOISE)
+        self.bridge_gen.manual_seed(derive_seed(self.seed, "imf_bridge_noise"))
 
-        self._init_cache_dataloader(SeedOffsets.IMF_SHUFFLE)
+        self._init_cache_dataloader("imf_shuffle")
 
         # The AMP scalers for the two models
         self.f_scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
@@ -382,7 +382,7 @@ class IMFTrainer(BaseTrainer):
                 and (n % eval_per == 0)
             )
             if _run_eval:
-                with self._isolated_global_rng(self.seed + SeedOffsets.IMF_EVAL):
+                with self._isolated_global_rng(derive_seed(self.seed, "imf_eval")):
                     b_metrics.update(eval_callback(b_eval, direction="b"))
 
             self.log_phase_end("backward", n, b_metrics)
@@ -412,7 +412,7 @@ class IMFTrainer(BaseTrainer):
                 "train_nfes": self.total_nfes - nfes_before,
             }
             if _run_eval:
-                with self._isolated_global_rng(self.seed + SeedOffsets.IMF_EVAL):
+                with self._isolated_global_rng(derive_seed(self.seed, "imf_eval")):
                     f_metrics.update(eval_callback(f_eval, direction="f"))
 
             self.log_phase_end("forward", n, f_metrics)

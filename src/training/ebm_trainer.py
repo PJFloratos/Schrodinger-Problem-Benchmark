@@ -1,5 +1,5 @@
 from src.training.trainer import Trainer
-from src.utils.seed import SeedOffsets
+from src.utils.seed import derive_seed
 
 import torch
 
@@ -56,7 +56,7 @@ class EBMTrainer(Trainer):
     def _init_replay_buffer(self, sample_shape: torch.Size, dtype: torch.dtype) -> None:
         """Initializes the persistent persistent MCMC replay buffer."""
         g_init = torch.Generator(device=self.device).manual_seed(
-            self.seed + SeedOffsets.EBM_BUFFER_INIT
+            derive_seed(self.seed, "ebm_buffer_init")
         )
         shape = (self.buffer_size,) + sample_shape
 

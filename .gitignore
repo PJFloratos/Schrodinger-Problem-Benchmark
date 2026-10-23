@@ -25,3 +25,6 @@ logs/
 /models/
 data/
 colab_training.ipynb
+
+# Hydra
+outputs/

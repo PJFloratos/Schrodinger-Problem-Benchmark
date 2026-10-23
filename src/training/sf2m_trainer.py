@@ -2,7 +2,7 @@ from src.training.base_trainer import BaseTrainer
 from src.core.dynamics import ConditionalVectorField
 from src.core.solver import EulerSampler
 from src.models.components import SF2MInferenceWrapper
-from src.utils.seed import SeedOffsets
+from src.utils.seed import derive_seed
 from src.utils import save_model, text_logger
 
 import torch
@@ -80,21 +80,21 @@ class SF2MTrainer(BaseTrainer):
 
         # DataLoader shuffling
         self.shuffle_gen = torch.Generator()
-        self.shuffle_gen.manual_seed(self.seed + SeedOffsets.SF2M_SHUFFLE)
+        self.shuffle_gen.manual_seed(derive_seed(self.seed, "sf2m_shuffle"))
 
         # Cache-simulation noise for forward/backward trajectory endpoints
         self.noise_gen = torch.Generator(device=self.device)
-        self.noise_gen.manual_seed(self.seed + SeedOffsets.SF2M_CACHE_NOISE)
+        self.noise_gen.manual_seed(derive_seed(self.seed, "sf2m_cache_noise"))
 
         # Minibatch order inside each cache
         self.perm_gen = torch.Generator(device=self.device)
-        self.perm_gen.manual_seed(self.seed + SeedOffsets.SF2M_CACHE_PERM)
+        self.perm_gen.manual_seed(derive_seed(self.seed, "sf2m_cache_perm"))
 
         # Fresh (t, z) at every gradient step for Brownian bridge targets
         self.bridge_gen = torch.Generator(device=self.device)
-        self.bridge_gen.manual_seed(self.seed + SeedOffsets.SF2M_BRIDGE_NOISE)
+        self.bridge_gen.manual_seed(derive_seed(self.seed, "sf2m_bridge_noise"))
 
-        self._init_cache_dataloader(SeedOffsets.SF2M_SHUFFLE)
+        self._init_cache_dataloader("sf2m_shuffle")
 
         # Precision & Compilation Settings
         self.u_scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
@@ -111,7 +111,6 @@ class SF2MTrainer(BaseTrainer):
             model=s_model,
             ema_mu=ema_mu,
             use_ema=use_ema,
-            sigma=sigma,
             create_sampler=True,
         )
 
@@ -403,7 +402,7 @@ class SF2MTrainer(BaseTrainer):
             if _run_eval:
                 s_eval.eval()
                 u_eval.eval()
-                with self._isolated_global_rng(self.seed + SeedOffsets.SF2M_EVAL):
+                with self._isolated_global_rng(derive_seed(self.seed, "sf2m_eval")):
                     wrapper = SF2MInferenceWrapper(
                         u_eval, s_eval, self.sigma, direction="b", eps=self.eps
                     )

@@ -6,7 +6,7 @@ from src.metrics.distances import (
     get_drift_mse,
     get_generative_quality_metrics,
 )
-from src.utils.seed import SeedOffsets
+from src.utils.seed import derive_seed
 from src.utils import text_logger
 
 import torch
@@ -22,19 +22,6 @@ import math
 import time
 from tqdm import tqdm
 from typing import Dict, Optional, Sequence, Union, Tuple, Callable, Any
-
-
-def _derive_seed(seed: int, stream: int) -> int:
-    """
-    Independent 63-bit seed for (seed, stream), via numpy's SeedSequence.
-
-    Unlike `seed + stream`, streams belonging to consecutive seeds never coincide
-    (with `+`, seed s / stream 2 equals seed s+1 / stream 1). Requires seed >= 0.
-    """
-    state = np.random.SeedSequence([int(seed), int(stream)]).generate_state(
-        1, dtype=np.uint64
-    )
-    return int(state[0]) >> 1  # python int: numpy 1.x cannot shift uint64 by an int
 
 
 class Evaluator:
@@ -62,20 +49,18 @@ class Evaluator:
             test_ds,
             batch_size=256,
             shuffle=False,
-            generator=torch.Generator().manual_seed(
-                _derive_seed(seed, SeedOffsets.EVAL_LOADER)
-            ),
+            generator=torch.Generator().manual_seed(derive_seed(seed, "eval_loader")),
         )
 
         # Private noise stream for the validation loss, re-seeded on every call.
         self._noise_gen = torch.Generator(device=self.device)
-        self._val_seed = _derive_seed(seed, SeedOffsets.EVAL_VAL_NOISE)
+        self._val_seed = derive_seed(seed, "eval_val_noise")
 
         self._forward_sim_gen = torch.Generator(device=self.device)
-        self._forward_sim_seed = _derive_seed(seed, SeedOffsets.EVAL_FORWARD_SIM)
+        self._forward_sim_seed = derive_seed(seed, "eval_forward_sim")
 
         self._prior_gen = torch.Generator(device=self.device)
-        self._prior_seed = _derive_seed(seed, SeedOffsets.EVAL_PRIOR_NOISE)
+        self._prior_seed = derive_seed(seed, "eval_prior_noise")
 
         # Global RNGs that evaluate() snapshots and restores (see _rng_shield).
         if self.device.type == "cuda":
@@ -101,9 +86,7 @@ class Evaluator:
         # (c) the subset for a smaller N is contained in the one for a larger N.
         self._ref_perm = torch.randperm(
             len(test_ds),
-            generator=torch.Generator().manual_seed(
-                _derive_seed(seed, SeedOffsets.EVAL_REF_PERM)
-            ),
+            generator=torch.Generator().manual_seed(derive_seed(seed, "eval_ref_perm")),
         )
 
         # Same rule as Trainer: channels_last for images on CUDA. The model handed to
@@ -175,8 +158,8 @@ class Evaluator:
                 shape=self.data_shape,
                 n_samples=n_eval,
                 device=self.device,
-                init_seed=_derive_seed(self.seed, SeedOffsets.EVAL_SOLVER_INIT),
-                step_seed=_derive_seed(self.seed, SeedOffsets.EVAL_SOLVER_STEP),
+                init_seed=derive_seed(self.seed, "eval_solver_init"),
+                step_seed=derive_seed(self.seed, "eval_solver_step"),
                 **self.solver_kwargs,
             )
             gen_time = time.time() - gen_start

@@ -1,0 +1,4 @@
+name: "CIFAR10"
+input_channels: 3
+image_size: 32
+batch_size: 256

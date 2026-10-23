@@ -7,29 +7,23 @@
 
 from src.pipeline import Pipeline
 from src.datasets.data_utils import get_dataset
-from src.configs import BaseConfig, Toy2dConfig, MNISTConfig
 from src.utils.log import text_logger, MetricLogger
 from src.utils.seed import set_all_seeds
 
 import torch
 
 import os
-from enum import Enum
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
 
 logger = text_logger(__name__)
 
 
-class DatasetType(str, Enum):
-    TOY2D = "toy2d"
-    MNIST = "mnist"
+@hydra.main(version_base="1.3", config_path="configs", config_name="main")
+def main(cfg: DictConfig) -> None:
+    logger.info(f"Loaded Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
-
-# Pick the dataset to train on
-ACTIVE_DATASET = DatasetType.TOY2D
-
-
-def main(cfg: BaseConfig) -> None:
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
@@ -38,7 +32,7 @@ def main(cfg: BaseConfig) -> None:
     # --- LOCK DOWN REPRODUCIBILITY FIRST ---
     set_all_seeds(cfg.seed)
 
-    # 1. Setup Directories
+    # Setup Directories
     os.makedirs(cfg.models_path, exist_ok=True)
     os.makedirs(cfg.plots_path, exist_ok=True)
     os.makedirs(cfg.logs_path, exist_ok=True)
@@ -69,6 +63,4 @@ def main(cfg: BaseConfig) -> None:
 
 
 if __name__ == "__main__":
-    cfg = Toy2dConfig() if ACTIVE_DATASET == DatasetType.TOY2D else MNISTConfig()
-
-    main(cfg)
+    main()

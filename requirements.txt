@@ -7,3 +7,5 @@ tqdm==4.70.1
 tensorboard==2.21.0
 torch_fidelity==0.4.0
 torchmetrics==1.9.0
+hydra-core==1.3.7
+omegaconf==2.3.1

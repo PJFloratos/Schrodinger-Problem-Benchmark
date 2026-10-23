@@ -2,7 +2,7 @@ from src.training.base_trainer import BaseTrainer
 from src.core.dynamics import ConditionalVectorField
 from src.models.components import SCONEWrapper
 from src.utils.log import text_logger
-from src.utils.seed import SeedOffsets
+from src.utils.seed import derive_seed
 
 import torch
 from torch.utils.data import DataLoader, random_split
@@ -70,9 +70,11 @@ class SCONETrainer(BaseTrainer):
         self.buffer_size = 10000
 
         self.train_gen = torch.Generator(device=self.device).manual_seed(
-            self.seed + SeedOffsets.SCONE_TRAIN_NOISE
+            derive_seed(self.seed, "scone_train_noise")
         )
-        self.valid_gen = torch.Generator(device=self.device)
+        self.valid_gen = torch.Generator(device=self.device).manual_seed(
+            derive_seed(self.seed, "scone_valid_noise")
+        )
 
         # Setup Dual Models
         self.phi_base, self.phi_model, self.phi_ema, _ = self._setup_model(
@@ -99,7 +101,9 @@ class SCONETrainer(BaseTrainer):
                     p.requires_grad_(True)
 
     def _get_loaders(self) -> Tuple[DataLoader, DataLoader]:
-        split_gen = torch.Generator().manual_seed(self.seed + SeedOffsets.SCONE_SHUFFLE)
+        split_gen = torch.Generator().manual_seed(
+            derive_seed(self.seed, "scone_shuffle")
+        )
         train_ds, valid_ds = random_split(
             self.dataset, [self.train_prop, 1 - self.train_prop], generator=split_gen
         )
@@ -113,6 +117,9 @@ class SCONETrainer(BaseTrainer):
             num_workers=nw,
             pin_memory=not is_toy,
             drop_last=True,
+            generator=torch.Generator().manual_seed(
+                derive_seed(self.seed, "scone_train_loader")
+            ),
         )
         valid_dl = DataLoader(
             valid_ds,
@@ -121,12 +128,15 @@ class SCONETrainer(BaseTrainer):
             num_workers=nw,
             pin_memory=not is_toy,
             drop_last=True,
+            generator=torch.Generator().manual_seed(
+                derive_seed(self.seed, "scone_valid_loader")
+            ),
         )
         return train_dl, valid_dl
 
     def _init_replay_buffer(self, sample_shape: torch.Size, dtype: torch.dtype) -> None:
         g_init = torch.Generator(device=self.device).manual_seed(
-            self.seed + SeedOffsets.SCONE_BUFFER_INIT
+            derive_seed(self.seed, "scone_buffer_init")
         )
         shape = (self.buffer_size,) + sample_shape
 
@@ -394,7 +404,7 @@ class SCONETrainer(BaseTrainer):
                     self.sigma,
                     self.reference,
                 )
-                with self._isolated_global_rng(self.seed + SeedOffsets.SCONE_EVAL):
+                with self._isolated_global_rng(derive_seed(self.seed, "scone_eval")):
                     metrics.update(eval_callback(eval_wrapper, direction="b"))
 
                 _log = self.logger.info

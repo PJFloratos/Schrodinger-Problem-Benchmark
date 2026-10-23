@@ -2,7 +2,7 @@ from src.training.base_trainer import BaseTrainer
 from src.core.dynamics import ConditionalVectorField
 from src.core.solver import EulerSampler
 from src.models.components import EMAHelper
-from src.utils.seed import SeedOffsets
+from src.utils.seed import derive_seed
 from src.utils import save_model, text_logger
 
 import torch
@@ -76,17 +76,17 @@ class IPFTrainer(BaseTrainer):
 
         # DataLoader shuffling (must be a CPU generator).
         self.shuffle_gen = torch.Generator()
-        self.shuffle_gen.manual_seed(self.seed + SeedOffsets.IPF_SHUFFLE)
+        self.shuffle_gen.manual_seed(derive_seed(self.seed, "ipf_shuffle"))
 
         # Cache-simulation noise: one continuous stream, touched by nothing else.
         self.noise_gen = torch.Generator(device=self.device)
-        self.noise_gen.manual_seed(self.seed + SeedOffsets.IPF_CACHE_NOISE)
+        self.noise_gen.manual_seed(derive_seed(self.seed, "ipf_cache_noise"))
 
         # Minibatch order inside each cache.
         self.perm_gen = torch.Generator(device=self.device)
-        self.perm_gen.manual_seed(self.seed + SeedOffsets.IPF_CACHE_PERM)
+        self.perm_gen.manual_seed(derive_seed(self.seed, "ipf_cache_perm"))
 
-        self._init_cache_dataloader(SeedOffsets.IPF_SHUFFLE)
+        self._init_cache_dataloader("ipf_shuffle")
 
         # Cache-staleness probe: re-seeded at the start of every probe, so the probe before
         # and after a refresh sees the exact same (index, t, z) draws.
@@ -380,7 +380,7 @@ class IPFTrainer(BaseTrainer):
                 and (n % eval_per == 0)
             )
             if _run_eval:
-                with self._isolated_global_rng(self.seed + SeedOffsets.IPF_EVAL):
+                with self._isolated_global_rng(derive_seed(self.seed, "ipf_eval")):
                     # Trigger the evaluator purely as a callback
                     b_metrics.update(eval_callback(b_eval, direction="b"))
 
@@ -416,7 +416,7 @@ class IPFTrainer(BaseTrainer):
                 "train_nfes": train_nfes,
             }
             if _run_eval:
-                with self._isolated_global_rng(self.seed + SeedOffsets.IPF_EVAL):
+                with self._isolated_global_rng(derive_seed(self.seed, "ipf_eval")):
                     f_metrics.update(eval_callback(f_eval, direction="f"))
 
             self.log_phase_end("forward", n, f_metrics)

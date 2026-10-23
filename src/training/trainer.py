@@ -1,7 +1,7 @@
 from src.training.base_trainer import BaseTrainer
 from src.core.dynamics import ConditionalVectorField
 from src.models.components import EMAHelper
-from src.utils.seed import SeedOffsets
+from src.utils.seed import derive_seed
 from src.utils import text_logger, save_model
 
 import torch
@@ -61,7 +61,7 @@ class Trainer(BaseTrainer):
 
         # Training noise: one continuous stream across epochs, touched by nothing else.
         self.train_gen = torch.Generator(device=self.device)
-        self.train_gen.manual_seed(self.seed + SeedOffsets.TRAIN_NOISE)
+        self.train_gen.manual_seed(derive_seed(self.seed, "train_noise"))
 
         # Validation noise: re-seeded at the start of every validation pass, so every
         # epoch (and every run) validates on the exact same (t, noise) draws and
@@ -84,7 +84,7 @@ class Trainer(BaseTrainer):
     # Data
     # ------------------------------------------------------------------
     def _get_loaders(self) -> Tuple[DataLoader, DataLoader]:
-        split_gen = torch.Generator().manual_seed(self.seed + SeedOffsets.TRAIN_SPLIT)
+        split_gen = torch.Generator().manual_seed(derive_seed(self.seed, "train_split"))
 
         train_ds, valid_ds = random_split(
             self.dataset,
@@ -103,7 +103,7 @@ class Trainer(BaseTrainer):
             pin_memory=not is_toy_data,
             drop_last=True,
             generator=torch.Generator().manual_seed(
-                self.seed + SeedOffsets.TRAIN_SHUFFLE
+                derive_seed(self.seed, "train_shuffle")
             ),
         )
         valid_dl = DataLoader(
@@ -114,7 +114,7 @@ class Trainer(BaseTrainer):
             pin_memory=not is_toy_data,
             drop_last=True,
             generator=torch.Generator().manual_seed(
-                self.seed + SeedOffsets.TRAIN_VALID_LOADER
+                derive_seed(self.seed, "train_valid_loader")
             ),
         )
 
@@ -224,8 +224,7 @@ class Trainer(BaseTrainer):
 
         # Same (t, noise) draws every epoch => valid_loss is comparable across epochs
         # and across runs; it only moves when the weights move.
-        self.valid_gen.manual_seed(self.seed + SeedOffsets.TRAIN_VALID_NOISE)
-
+        self.valid_gen.manual_seed(derive_seed(self.seed, "train_valid_noise"))
         with torch.inference_mode():
             valid_loss = self._process_data_loaders(valid_dl, epoch, model)
 
@@ -281,7 +280,7 @@ class Trainer(BaseTrainer):
             )
             if _run_eval:
                 # 'b' direction used traditionally for generative path evaluation
-                with self._isolated_global_rng(self.seed + SeedOffsets.TRAIN_EVAL):
+                with self._isolated_global_rng(derive_seed(self.seed, "train_eval")):
                     metrics.update(eval_callback(eval_model, direction="b"))
 
             # --- BaseTrainer Outer Metric Hooks ---

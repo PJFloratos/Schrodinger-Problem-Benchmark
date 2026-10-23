@@ -1,0 +1,5 @@
+name: "SDE"             # in [SDE, ODE, FM]
+type: "sde"             # in [sde, minibatch, flow_m]
+
+sim_steps: 100
+save_interval: 500

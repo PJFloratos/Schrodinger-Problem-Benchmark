@@ -1,0 +1,12 @@
+name: "LSBM"
+type: "lightsbm"
+
+n_potentials: 1000
+sim_steps: 200
+save_interval: 500
+
+# These override the global defaults in main.yaml
+use_compile: false
+use_amp: false
+use_ema: false
+weight_decay: 0.0
