@@ -110,42 +110,72 @@ class BaseTrainer(ABC):
 
         return model_base, model_compiled, ema_helper, sampler_compiled
 
-    def _init_cache_dataloader(self, shuffle_context: str) -> None:
-        """Initializes the infinite data stream used by cache-based trainers (IPF, IMF, SF2M)."""
-        self.dl = DataLoader(
-            self.dataset,
-            batch_size=self.batch_size,
+    def _get_loader(
+        self, split=None, shuffle_context: str = ""
+    ) -> Tuple[DataLoader, DataLoader]:
+        dataset = split if split else self.dataset
+
+        is_toy = len(self.data_shape) == 1
+
+        return DataLoader(
+            dataset,
+            self.batch_size,
             shuffle=True,
+            num_workers=0 if is_toy else 2,
+            pin_memory=not is_toy,
             drop_last=True,
             generator=torch.Generator().manual_seed(
                 derive_seed(self.seed, shuffle_context)
             ),
         )
+
+    def _init_cache_dataloader(self, shuffle_context: str) -> None:
+        """Initializes the infinite data stream used by cache-based trainers (IPF, IMF, SF2M)."""
+        self.dl = self._get_loader(shuffle_context=shuffle_context)
         self._data_iter = self._repeater(self.dl)
 
     # ------------------------------------------------------------------
     # Shared Utils
     # ------------------------------------------------------------------
-    def _format_eval_str(
-        self, metrics: Dict[str, Any], run_eval: bool, prefix: str = ""
-    ) -> str:
-        """
-        Formats evaluation metrics into a standardized string for logging.
-        Returns an empty string if no evaluation was run, preventing trailing separators.
-        """
-        if not run_eval:
-            return ""
+    def _optimize_step(
+        self,
+        base_model: nn.Module,
+        opt: torch.optim.Optimizer,
+        scaler: torch.amp.GradScaler,
+        loss: torch.Tensor,
+        ema: Any,
+        log: bool = False,
+        phase: str = "train",
+        epoch: int = None,
+    ):
+        """DRYs out the repetitive AMP, clipping, and EMA logic for both models."""
+        opt.zero_grad(set_to_none=True)
+        if self.use_amp:
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt)
+        else:
+            loss.backward()
 
-        if "FID" in metrics:
-            return (
-                f" {prefix}FID: {metrics['FID']:.3f}"
-                f" | {prefix}Prec: {metrics['Precision']:.3f}"
-                f" | {prefix}Rec: {metrics['Recall']:.3f}"
+        if log and phase and epoch:
+            self.log_inner_step(
+                model=base_model,
+                loss=loss,
+                optimizer=opt,
+                phase=phase,
+                ipf_iter=epoch,
             )
-        elif "eval_MMD" in metrics:
-            return f" {prefix}MMD: {metrics['eval_MMD']:.6f}"
 
-        return ""
+        if self.grad_clip:
+            torch.nn.utils.clip_grad_norm_(base_model.parameters(), self.grad_clip)
+
+        if self.use_amp:
+            scaler.step(opt)
+            scaler.update()
+        else:
+            opt.step()
+
+        if ema:
+            ema.update(base_model)
 
     @contextmanager
     def _isolated_global_rng(self, seed: int):
@@ -284,6 +314,27 @@ class BaseTrainer(ABC):
     # ------------------------------------------------------------------
     # Logging & Diagnostics
     # ------------------------------------------------------------------
+
+    def _format_eval_str(
+        self, metrics: Dict[str, Any], run_eval: bool, prefix: str = ""
+    ) -> str:
+        """
+        Formats evaluation metrics into a standardized string for logging.
+        Returns an empty string if no evaluation was run, preventing trailing separators.
+        """
+        if not run_eval:
+            return ""
+
+        if "FID" in metrics:
+            return (
+                f" {prefix}FID: {metrics['FID']:.3f}"
+                f" | {prefix}Prec: {metrics['Precision']:.3f}"
+                f" | {prefix}Rec: {metrics['Recall']:.3f}"
+            )
+        elif "eval_MMD" in metrics:
+            return f" {prefix}MMD: {metrics['eval_MMD']:.6f}"
+
+        return ""
 
     def log_inner_step(
         self,

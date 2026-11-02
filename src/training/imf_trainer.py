@@ -61,6 +61,7 @@ class IMFTrainer(BaseTrainer):
         lr_final_ratio: float = 0.05,  # final lr = ratio * base lr
         use_amp: bool = True,
         use_ema: bool = True,
+        use_compile: bool = True,
     ):
         if first_coupling not in ("ind", "ref"):
             raise ValueError(
@@ -118,12 +119,14 @@ class IMFTrainer(BaseTrainer):
             ema_mu=ema_mu,
             use_ema=use_ema,
             create_sampler=True,
+            use_compile=use_compile,
         )
         self.b_model_base, self.b_model, self.b_ema, self.b_sampler = self._setup_model(
             model=backward_model,
             ema_mu=ema_mu,
             use_ema=use_ema,
             create_sampler=True,
+            use_compile=use_compile,
         )
 
     # ------------------------------------------------------------------
@@ -186,9 +189,9 @@ class IMFTrainer(BaseTrainer):
             if use_first:
                 x0 = self._next_data()
                 if self.first_coupling == "ref":
-                    x1 = x0 + self.sigma * torch.randn_like(x0)
+                    x1 = x0 + self.sigma * self._randn_like(x0, self.noise_gen)
                 else:
-                    x1 = self._randn_like(x0, self.noise_gen)
+                    x1 = self._randn_like(x0, self.noise_gen) * self.sigma
             elif phase == "b":
                 x0 = self._next_data()
                 x1 = sampler_engine.generate(
@@ -200,13 +203,15 @@ class IMFTrainer(BaseTrainer):
                     verbose=False,
                 )
             else:
-                x1 = torch.randn(
-                    self.batch_size,
-                    *self.data_shape,
-                    device=self.device,
-                    generator=self.noise_gen,
-                ).contiguous(memory_format=self.memory_format)
-                # x0 = self._simulate(sampler, x1)
+                x1 = (
+                    torch.randn(
+                        self.batch_size,
+                        *self.data_shape,
+                        device=self.device,
+                        generator=self.noise_gen,
+                    ).contiguous(memory_format=self.memory_format)
+                    * self.sigma
+                )
                 x0 = sampler_engine.generate(
                     model=sampler,
                     x_init=x1,
@@ -301,34 +306,16 @@ class IMFTrainer(BaseTrainer):
                     "imf", pred, target, t_net, sigma=self.sigma
                 )
 
-            if self.use_amp:
-                # Scale the loss and backward pass
-                scaler.scale(loss).backward()
-
-                # UNSCALE BEFORE CLIPPING
-                scaler.unscale_(opt)
-            else:
-                loss.backward()
-
-            # --- BaseTrainer Metric Hook (pre-clip grad norm) ---
-            self.log_inner_step(model, loss, opt, phase=log_phase, ipf_iter=imf_iter)
-
-            # Clip the unscaled gradients
-            if self.grad_clip:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), self.grad_clip)
-
-            if self.use_amp:
-                # Step optimizer through the scaler (skips step if inf/nan gradients are found)
-                scaler.step(opt)
-
-                # Update the scaler for the next iteration
-                scaler.update()
-            else:
-                opt.step()
-
-            if self.use_ema:
-                # EMA tracks the live weights after every optimizer step
-                ema_helper.update(model)
+            self._optimize_step(
+                model,
+                opt,
+                scaler,
+                loss,
+                ema_helper,
+                log=True,
+                phase=log_phase,
+                epoch=imf_iter,
+            )
 
             # We cast to .float() in case AMP is using float16, to prevent overflow
             # when accumulating thousands of steps.
@@ -414,14 +401,15 @@ class IMFTrainer(BaseTrainer):
             if _run_eval:
                 with self._isolated_global_rng(derive_seed(self.seed, "imf_eval")):
                     f_metrics.update(eval_callback(f_eval, direction="f"))
+                _log = self.logger.info
+            else:
+                _log = self.logger.debug
 
             self.log_phase_end("forward", n, f_metrics)
 
             # Dynamically format the log string based on whether evaluation ran
             qual_str = self._format_eval_str(f_metrics, _run_eval, prefix="F-")
-            self.logger.info(
-                f"Iteration {n} (Forward) | F-Loss: {f_loss:.4f} | {qual_str}"
-            )
+            _log(f"Iteration {n} (Forward) | F-Loss: {f_loss:.4f} | {qual_str}")
 
             # --- Outer-Loop Diagnostics (same hooks as IPF) ---
             self.track_parameter_drift(self.b_model, ipf_iter=n)

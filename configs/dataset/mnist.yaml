@@ -1,4 +1,6 @@
 name: "MNIST"
+type: "mnist"
+
 input_channels: 1
 image_size: 28
 batch_size: 256

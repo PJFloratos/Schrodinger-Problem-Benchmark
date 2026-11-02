@@ -1,7 +1,7 @@
 name: "LSBM"
 type: "lightsbm"
 
-n_potentials: 1000
+n_potentials: 10000
 sim_steps: 200
 save_interval: 500
 

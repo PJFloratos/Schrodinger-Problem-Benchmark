@@ -1,6 +1,6 @@
 defaults:
   - dataset: toy2d
-  - model: ebm
+  - model: enot
   - _self_
 
 # --- Reproducibility & Hardware ---
@@ -9,12 +9,13 @@ eval_seed: 9999
 device: "cpu"
 
 use_amp: false
-use_ema: false
+use_ema: True
 use_compile: false
 
 # --- Global Physics & Training Defaults ---
-reference: "brownian"   # in ['brownian', 'ou', 'custom']
-sigma: 0.5
+reference: "brownian"   # in ['brownian', 'ou']
+sigma: 0.1
+gamma: 1.0
 epochs: 100
 batch_size: 512
 learning_rate: 1e-3
@@ -22,9 +23,10 @@ weight_decay: 1e-4
 grad_clip: 1.0
 
 # --- Global Evaluation Defaults ---
-eval_per: 20
+eval_per: 10
+plot_epoch: True
 save_interval: 500
-eval_sim_steps: 200
+eval_sim_steps: 50
 track_gen_samples: 512
 eval_gen_samples: 4000
 
@@ -42,24 +44,57 @@ models_path: "${base_model_path}/${dataset.name}/${model.name}"
 logs_path: "${base_log_path}/${dataset.name}/${model.name}"
 
 
-#################################################################
-# TODO:
-#     - Update for OU reference
-#     - Add the fluid dynamic models
+################################################################################
+#
+# Next:
+#     - Implement FBSDE model
+#     - Two 'generating samples' in evaluation bug
+#     - Add the action matching model
+#     - Update for OU reference & start at an arbitrary p_prior
+#     - Examine if the evaluation/generation can be faster
 #     - Read the benchmark paper (implement and extend it)
 #
-#     (Mathematical Verification)
-#     - Run the solvers against the real SB
-#         - for Brownian Motion across different sigma
-#         - for OU process
-#         - for other processes
-#     - Can examine the PCA penalty of the convergence
 #
-#     (Hypothesis)
-#     - Run the solvers in the MNIST and CIFAR10 datasets
+# Experiments Structure:
+#     - experiments/
+#     - experiments/<dataset>
+#     - experiments/<dataset>/<model_type>
+#     - experiments/<dataset>/<model_type>/<exp_name>
+#     - experiments/<dataset>/<model_type>/<exp_name>/settings.log
+#     - experiments/<dataset>/<model_type>/<exp_name>/train.log
+#     - experiments/<dataset>/<model_type>/<exp_name>/eval.log
+#     - experiments/<dataset>/<model_type>/<exp_name>/model.pth
+#     - experiments/<dataset>/<model_type>/<exp_name>/plots/
+#     - experiments/<dataset>/<model_type>/<exp_name>/plots/<plot_name>.png
 #
-#     (Further Steps)
+#
+# Experiments Strategy:
+#     Benchmark Datasets:
+#         1) Schrodinger Bridge for Gaussian to Gaussian
+#         2) Schrodinger Bridge for Mixture of Gaussians
+#         3) Schrodinger Bridge knows by construction
+#
+#     Phase 1:
+#         - Start from N(0, sigma)
+#         - SDE, FM, LightSBM base cases
+#         - Start with the s-Brownian Motion reference
+#         - Proceed to the OU reference
+#
+#     Phase 2:
+#         - Use high dimensional dataset from (3) above
+#         - Use the best reference measure from above
+#         - Apply PCA and converge the models in the principal space
+#         - Examine the difference of the two Schrodinger Bridges
+#
+#     Phase 3:
+#         - Use MNIST and CIFAR10 datasets
+#         - Start with s-Brownian Motion and then OU
+#         - Does faster convergence to the SB lead to better FID?
+#
+#
+# Further Additions:
 #     - Discuss the SP in the discrete setting
 #     - Discuss the SP in infinite dimensions
 #     - Discuss the unconstraint SP
-#################################################################
+#
+################################################################################

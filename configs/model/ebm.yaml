@@ -1,11 +1,36 @@
 name: "EBM"
 type: "ebm"
 
-ula_steps: 30
-ula_step_size: 5e-3
-spatial_clip: 50.0
-l2_reg: 1e-4
-cold_start: 0.02
+ula_steps: 40
+ula_step_size: 1e-3 # for swiss roll use 1e-2
+spatial_clip: 0.0
+l2_reg: 1e-3
+gp_weight: 0.0 # for swiss roll use 1.0
+cold_start: 0.0
 eta_min_infer: 1e-5
-ebm_steps: 1000
+ebm_steps: 500
+
+buffer_size: 10000
 save_interval: 500
+
+
+# I tried removing the spectral norm from the last liner training and I also set the gp_weight to zero. Yet the model managed to collapse as you see from the plots. So I then removed the spectral norm entirely and tried to experiment with the gp_weight.
+# For very high, above 1 the model does not train and maintain the shape of 20th epoch throughout. And for weight bellow 1 the model converged only to the right part of the outer ring and for even smaller weights it converged to certain islands as seen from the plot.
+# The I experimented with the ula step size. I tried increasing it to 5e-2 and 0.1 but the training lead to nan values.
+# Then I tried some experiments with the l2 reg. The default was 1e-3 so I lowered it to 1e-4. The results were a bit better with the model be able to cover a very small part of the inner spiral as well. I then tried to remove the l2 regularization by setting it zero. The fit process run way faster with that change. The results were no different from 1e-4 and slightly better than 1e-3 so I remove it entirely.
+# I then tried this new approach: no spectral norm, gp_weight=1, ula step size=1e-2, l2_reg=0 for more epochs. I kepts the ula steps to 40 and the ebm steps to 500 because the training were the same fir higher values of them. With this configuration the results were clearer and similar to the onces we staet with. The model seams no training past 100 epoch.
+# Lastly I experimented with a slightly better model (doubling the hidden size). That changed nothing meaning that the model is not the problem here.
+# Those experiments conclude that there is a lot of improvement that need to be made in the training loop and not the parameter, nor the model.
+# Given this information dump, what more approaches can you examine in the training loop to make the model converge to the swiss roll?
+#
+# I started by adding the target data injection strategy to the training for 5% and the results were similar as previosuly. No improvement observed. I then tried for 10%. At epoch 75 I observe some significance on the inner ring as you observe from the first plot, but it dissapears from epoch 150 and onward. This warm start does not conitnues after the first epochs (as you see from the second plot).
+# So I kept it at 5% and set the gp_weight to zero by removing the grad entriely. And I implemented a 5 grad_clip_va to both the grad psi and the drift. Initially I kept the step size at 1e-2 in order to test it with the experiments we have already made. I notice the loos to explode twoard -inf and the fit process to slow down a bit. With the results also exaploding outside of the plot as seen from the third plot.
+# Before abandon the clipping strategy entriely I tried setting the clippin to 1. Similar explossion did happen and the generated plots were out of hand.
+# So I went back to gp_weight with 0.8 and tried 20% the cold start and taget injection. The results were no different than gp_weight 1 and 5% injection. Tried with weight 0.5 and 20% cold start and injection. The resulst were better than 0.5 weight without injection yet still failed to converged to the inner ring (plot 4).
+
+# Here is my initial configuration. I keep l2 to zero and I am testing the new target injection for 20% and weight gp at 1. The model still failed to keep the inner ring after epoch 75 as shown in plot1. I then added 1e-4 l2 reg on the same setup to see how it will affect it which I assume it will not matter because the gp weight is a lot larger than 1e-4. After this experiment I observed that the model managed to smooth the curve and dissapear the inner ring even at epoch 75 (as seen from plot2). Perhaps it's the failt of the buffer size which is hardcoded to self.buffer_size = 10000.
+# So I then tried to decrease the gp weight to 0.1 to see how it will affect training (by keeping injection at 20% and l2 reg ar 1e-4). Note that I am not using clipping because I don't see loss explossion when I use the gp eight. I norice the same fallacies of the low gp weight we noticed earlier (plot3).
+# So I removed the gp weight entrely and did clipping by keeping the l2 reg to 1e-4. I clipped both grad psi and the drift with grad_clip=5. The loss still exploaded for 1e-4. I then tried with 1e-3 and keeping the grad clip to 5. The first thing I notice is that clipping affect a lot the generation speed making it even slower than using gp weight and not clipping. The l2 reg with 1e-3 didn't helped either. I then tried for 1e-2. I have kept the step size 1e-2 throughout those experiments. 1e-2 l2 still failed. Clipping with 10 failed as well. And lastly clipping with grad_clip=1 failed as well (plot4). I didn't changed the step size throughout training because the model is exploading, I don't care if it slower or faster. Clipping is disgarded from now on. And the l2 reg is disgarded as well.
+# So far the gp weight gave the best performance, but failed to strcuture the inner ring.
+
+# I tried the two-sided energy regularization with alpha=0.1, without gp weight and without clipping. I kept the target injection and cold start at 20%. First of all the loss didn't exploaded. The bad news is that the model didn't managed to learn the structure as we see in plot1 (which is at epoch 300). I then tried descresing alpha to 0.01. The results for epoch 75 throguh 300 is shown in plot2, plot3, plot4 and plot5. It managed to capture something like the outer ring but with a lot of noise. It seams that the model wants to expload judging from the circle that has formed but the regularization prevents it violently, which lead to this poor generation samples. I am afraid this approach is leading us nowhere as well.

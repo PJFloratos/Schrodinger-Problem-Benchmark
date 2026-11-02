@@ -1,0 +1,12 @@
+name: "ENOT"
+type: "enot"
+
+inner_iters: 3
+integration_steps: 40
+energy_weight: "auto"
+potential_reg: 1e-3
+gp_weight: 1e-4
+drift_lr: 1e-4
+potential_lr: 1e-3
+
+save_interval: 500

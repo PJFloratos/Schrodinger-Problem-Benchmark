@@ -36,11 +36,13 @@ class SCONETrainer(BaseTrainer):
         train_prop: float = 0.8,
         sigma: float = 1.0,
         reference: str = "brownian",
+        cold_start: float = 0.02,
+        spatial_clip: float = 0.0,
         ula_steps: int = 100,
         ula_step_size: float = 5e-3,
         eta_min: float = 1e-4,
-        spatial_clip: float = 10.0,
         l2_reg: float = 1e-5,
+        buffer_size: float = 10000,
         grad_clip: float = 1.0,
         ema_mu: float = 0.999,
         use_ema: bool = True,
@@ -62,12 +64,13 @@ class SCONETrainer(BaseTrainer):
         self.grad_clip = grad_clip
 
         self.reference = reference
+        self.cold_start = cold_start
+        self.spatial_clip = spatial_clip
         self.eta = ula_step_size
         self.eta_min = eta_min
         self.ula_steps = ula_steps
-        self.spatial_clip = spatial_clip
         self.l2_reg = l2_reg
-        self.buffer_size = 10000
+        self.buffer_size = buffer_size
 
         self.train_gen = torch.Generator(device=self.device).manual_seed(
             derive_seed(self.seed, "scone_train_noise")
@@ -100,40 +103,6 @@ class SCONETrainer(BaseTrainer):
                 for p in m.parameters():
                     p.requires_grad_(True)
 
-    def _get_loaders(self) -> Tuple[DataLoader, DataLoader]:
-        split_gen = torch.Generator().manual_seed(
-            derive_seed(self.seed, "scone_shuffle")
-        )
-        train_ds, valid_ds = random_split(
-            self.dataset, [self.train_prop, 1 - self.train_prop], generator=split_gen
-        )
-        is_toy = len(self.data_shape) == 1
-        nw = 0 if is_toy else 2
-
-        train_dl = DataLoader(
-            train_ds,
-            self.batch_size,
-            shuffle=True,
-            num_workers=nw,
-            pin_memory=not is_toy,
-            drop_last=True,
-            generator=torch.Generator().manual_seed(
-                derive_seed(self.seed, "scone_train_loader")
-            ),
-        )
-        valid_dl = DataLoader(
-            valid_ds,
-            self.batch_size,
-            shuffle=False,
-            num_workers=nw,
-            pin_memory=not is_toy,
-            drop_last=True,
-            generator=torch.Generator().manual_seed(
-                derive_seed(self.seed, "scone_valid_loader")
-            ),
-        )
-        return train_dl, valid_dl
-
     def _init_replay_buffer(self, sample_shape: torch.Size, dtype: torch.dtype) -> None:
         g_init = torch.Generator(device=self.device).manual_seed(
             derive_seed(self.seed, "scone_buffer_init")
@@ -141,8 +110,9 @@ class SCONETrainer(BaseTrainer):
         shape = (self.buffer_size,) + sample_shape
 
         # Initialize from the target Joint Reference Measure R_01
-        self.replay_buffer_x = torch.randn(
-            shape, device=self.device, dtype=dtype, generator=g_init
+        self.replay_buffer_x = (
+            torch.randn(shape, device=self.device, dtype=dtype, generator=g_init)
+            * self.sigma
         )
         self.replay_buffer_y = self.replay_buffer_x + self.sigma * torch.randn(
             shape, device=self.device, dtype=dtype, generator=g_init
@@ -150,7 +120,11 @@ class SCONETrainer(BaseTrainer):
 
     @torch.no_grad()
     def _generate_joint_samples(
-        self, batch_size: int, gen: torch.Generator, y_real
+        self,
+        batch_size: int,
+        gen: torch.Generator,
+        x_real: torch.Tensor,
+        y_real: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """The Negative Phase: Joint Unadjusted Langevin Algorithm (ULA)"""
         idx = torch.randperm(self.buffer_size, device=self.device, generator=gen)[
@@ -160,45 +134,42 @@ class SCONETrainer(BaseTrainer):
         y_fake = self.replay_buffer_y[idx].clone()
 
         # --- 5% Cold Start to stabilize fast PCD ---
-        cold_start_prob = 0.05
         cold = (
-            torch.rand(batch_size, device=self.device, generator=gen) < cold_start_prob
+            torch.rand(batch_size, device=self.device, generator=gen) < self.cold_start
         )
         n_cold = int(cold.sum())
         if n_cold > 0:
             # Prior side: standard normal
-            x_fake[cold] = torch.randn(
-                (n_cold, *self.data_shape),
-                device=self.device,
-                dtype=x_fake.dtype,
-                generator=gen,
-            ).contiguous(memory_format=self.memory_format)
+            x_fake[cold] = (
+                torch.randn(
+                    (n_cold, *self.data_shape),
+                    device=self.device,
+                    dtype=x_fake.dtype,
+                    generator=gen,
+                ).contiguous(memory_format=self.memory_format)
+                * self.sigma
+            )
 
             # Data side: teleport directly to the real data distribution (with slight noise for exploration)
             idx_real = torch.randperm(batch_size, device=self.device, generator=gen)[
                 :n_cold
             ]
-            y_fake[cold] = y_real[idx_real].clone() + 0.1 * torch.randn_like(
-                y_real[idx_real]
+            y_fake[cold] = y_real[idx_real].clone() + 0.1 * self._randn_like(
+                y_real[idx_real], gen
             )
 
         noise_x = torch.empty_like(x_fake)
         noise_y = torch.empty_like(y_fake)
 
-        # noise_x = torch.empty_like(x_fake)
-        # noise_y = torch.empty_like(y_fake)
-
         for i in range(self.ula_steps):
             # Simulated Annealing
-            # progress = i / max(1, self.ula_steps - 1)
-            # current_eta = self.eta * (self.eta_min / self.eta) ** progress
+            progress = i / max(1, self.ula_steps - 1)
+            current_eta = self.eta * (self.eta_min / self.eta) ** progress
 
             x_fake = x_fake.detach().requires_grad_(True)
             y_fake = y_fake.detach().requires_grad_(True)
 
             with torch.enable_grad():
-                # phi_fake = self.phi_model(x_fake)
-                # psi_fake = self.psi_model(y_fake)
                 with torch.autocast(
                     device_type=self.device.type,
                     dtype=self.amp_dtype,
@@ -214,10 +185,6 @@ class SCONETrainer(BaseTrainer):
                     psi_fake.sum(), y_fake, create_graph=False
                 )[0]
 
-            if self.spatial_clip > 0:
-                grad_phi = grad_phi.clamp(-self.spatial_clip, self.spatial_clip)
-                grad_psi = grad_psi.clamp(-self.spatial_clip, self.spatial_clip)
-
             # Route reference score logic
             if self.reference == "brownian":
                 ref_x, ref_y = ConditionalVectorField.get_reference_scores(
@@ -229,14 +196,70 @@ class SCONETrainer(BaseTrainer):
                     f"Pre-trained score network for '{self.reference}' not yet integrated."
                 )
 
+            if self.spatial_clip > 0:
+                grad_phi = torch.clamp(
+                    grad_phi, min=-self.spatial_clip, max=self.spatial_clip
+                )
+                grad_psi = torch.clamp(
+                    grad_psi, min=-self.spatial_clip, max=self.spatial_clip
+                )
+
             drift_x = grad_phi + ref_x
             drift_y = grad_psi + ref_y
+
+            if self.spatial_clip > 0:
+                # 1. Calculate the L2 norm of the drift vectors (Shape: [B, 1])
+                norm_x = torch.norm(drift_x, p=2, dim=-1, keepdim=True)
+                norm_y = torch.norm(drift_y, p=2, dim=-1, keepdim=True)
+
+                # 2. Scale down only the vectors that exceed the speed limit
+                # If norm < clip, the denominator is 1.0 (no change).
+                # If norm > clip, it scales the vector down to exactly the clip length.
+                drift_x = drift_x / torch.clamp(norm_x / self.spatial_clip, min=1.0)
+                drift_y = drift_y / torch.clamp(norm_y / self.spatial_clip, min=1.0)
 
             noise_x.normal_(generator=gen)
             noise_y.normal_(generator=gen)
 
             x_fake = x_fake + 0.5 * self.eta * drift_x + math.sqrt(self.eta) * noise_x
             y_fake = y_fake + 0.5 * self.eta * drift_y + math.sqrt(self.eta) * noise_y
+
+        # ---------------------------------------------------------
+        # Dynamic Buffer Reset
+        # ---------------------------------------------------------
+        # 1. Determine empirical bounds of both domains based on current batches
+        batch_max_x = x_real.abs().max()
+        batch_max_y = y_real.abs().max()
+
+        # 2. Set dynamic radius to safely encapsulate the largest current domain with a margin
+        dynamic_safe_radius = torch.max(batch_max_x, batch_max_y) * 1.5
+
+        # 3. Catch particles that have physically escaped OR collapsed to NaN/Inf
+        escaped = (
+            (x_fake.abs() > dynamic_safe_radius).any(dim=-1)
+            | (y_fake.abs() > dynamic_safe_radius).any(dim=-1)
+            | x_fake.isnan().any(dim=-1)
+            | y_fake.isnan().any(dim=-1)
+            | x_fake.isinf().any(dim=-1)
+            | y_fake.isinf().any(dim=-1)
+        )
+
+        n_escaped = int(escaped.sum())
+        if n_escaped > 0:
+            # Resample random real data from both distributions
+            idx_reset = torch.randperm(batch_size, device=self.device, generator=gen)[
+                :n_escaped
+            ]
+
+            # Reset X to the empirical prior distribution with slight exploration noise
+            x_fake[escaped] = x_real[idx_reset].clone() + 0.1 * self._randn_like(
+                x_real[idx_reset], gen
+            )
+
+            # Reset Y to the empirical target distribution with slight exploration noise
+            y_fake[escaped] = y_real[idx_reset].clone() + 0.1 * self._randn_like(
+                y_real[idx_reset], gen
+            )
 
         return x_fake, y_fake, idx
 
@@ -266,14 +289,12 @@ class SCONETrainer(BaseTrainer):
 
         return loss_phi, loss_psi
 
-    def _process_data_loaders(
-        self, dl: DataLoader, epoch: int, is_train: bool
-    ) -> Tuple[float, float]:
+    def _process_train_loader(self, dl: DataLoader, epoch: int) -> Tuple[float, float]:
         total_loss_phi = torch.tensor(0.0, device=self.device)
         total_loss_psi = torch.tensor(0.0, device=self.device)
 
-        phase = "train" if is_train else "valid"
-        gen = self.train_gen if is_train else self.valid_gen
+        gen = self.train_gen
+        phase = "train"
 
         for y_real in tqdm(dl, ascii=True, desc=f"              {phase}"):
             y_real = y_real.to(
@@ -281,9 +302,12 @@ class SCONETrainer(BaseTrainer):
             )
             batch_size = y_real.shape[0]
 
-            x_real = torch.randn(
-                y_real.shape, device=self.device, dtype=y_real.dtype, generator=gen
-            ).contiguous(memory_format=self.memory_format)
+            x_real = (
+                torch.randn(
+                    y_real.shape, device=self.device, dtype=y_real.dtype, generator=gen
+                ).contiguous(memory_format=self.memory_format)
+                * self.sigma
+            )
 
             if getattr(self, "replay_buffer_x", None) is None:
                 self._init_replay_buffer(y_real.shape[1:], y_real.dtype)
@@ -291,63 +315,45 @@ class SCONETrainer(BaseTrainer):
             # Freeze the network parameters so PyTorch doesn't cache intermediate activations
             with self._freeze_weights(self.phi_model, self.psi_model):
                 x_fake, y_fake, idx = self._generate_joint_samples(
-                    batch_size, gen, y_real
+                    batch_size, gen, x_real, y_real
                 )
 
-            if is_train:
-                self.replay_buffer_x[idx] = x_fake.detach()
-                self.replay_buffer_y[idx] = y_fake.detach()
+            self.replay_buffer_x[idx] = x_fake.detach()
+            self.replay_buffer_y[idx] = y_fake.detach()
 
-                self.phi_opt.zero_grad(set_to_none=True)
-                self.psi_opt.zero_grad(set_to_none=True)
+            with torch.autocast(
+                device_type=self.device.type,
+                dtype=self.amp_dtype,
+                enabled=self.use_amp,
+            ):
+                loss_phi, loss_psi = self._compute_losses(
+                    x_real, y_real, x_fake, y_fake
+                )
 
-            cm = contextlib.nullcontext() if is_train else torch.no_grad()
-            with cm:
-                with torch.autocast(
-                    device_type=self.device.type,
-                    dtype=self.amp_dtype,
-                    enabled=self.use_amp,
-                ):
-                    loss_phi, loss_psi = self._compute_losses(
-                        x_real, y_real, x_fake, y_fake
-                    )
+            self._optimize_step(
+                base_model=self.phi_base,
+                opt=self.phi_opt,
+                scaler=self.phi_scaler,
+                loss=loss_phi,
+                ema=self.phi_ema,
+                log=False,
+                phase=phase,
+                epoch=epoch,
+            )
 
-            if is_train:
-                if self.use_amp:
-                    self.phi_scaler.scale(loss_phi).backward()
-                    self.phi_scaler.unscale_(self.phi_opt)
-                else:
-                    loss_phi.backward()
-                if self.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.phi_base.parameters(), self.grad_clip
-                    )
-                if self.use_amp:
-                    self.phi_scaler.step(self.phi_opt)
-                    self.phi_scaler.update()
-                else:
-                    self.phi_opt.step()
+            # Optimize Psi Potential
+            self._optimize_step(
+                base_model=self.psi_base,
+                opt=self.psi_opt,
+                scaler=self.psi_scaler,
+                loss=loss_psi,
+                ema=self.psi_ema,
+                log=False,
+                phase=phase,
+                epoch=epoch,
+            )
 
-                if self.use_amp:
-                    self.psi_scaler.scale(loss_psi).backward()
-                    self.psi_scaler.unscale_(self.psi_opt)
-                else:
-                    loss_psi.backward()
-                if self.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.psi_base.parameters(), self.grad_clip
-                    )
-                if self.use_amp:
-                    self.psi_scaler.step(self.psi_opt)
-                    self.psi_scaler.update()
-                else:
-                    self.psi_opt.step()
-
-                if self.phi_ema:
-                    self.phi_ema.update(self.phi_base)
-                    self.psi_ema.update(self.psi_base)
-
-                self.total_gradient_steps += 1
+            self.total_gradient_steps += 1
 
             total_loss_phi += loss_phi.detach().float()
             total_loss_psi += loss_psi.detach().float()
@@ -365,7 +371,7 @@ class SCONETrainer(BaseTrainer):
         eval_per: Optional[int] = None,
         eval_callback: Optional[Callable] = None,
     ) -> Dict:
-        train_dl, valid_dl = self._get_loaders()
+        train_dl = self._get_loader(self.dataset, "scone_train_loader")
 
         for epoch in range(1, epochs + 1):
             self.logger.debug(f"-> Epoch: {epoch}/{epochs}")
@@ -373,13 +379,10 @@ class SCONETrainer(BaseTrainer):
 
             self.phi_model.train()
             self.psi_model.train()
-            train_phi, train_psi = self._process_data_loaders(
-                train_dl, epoch, is_train=True
-            )
+            train_phi, train_psi = self._process_train_loader(train_dl, epoch)
 
             self.phi_model.eval()
             self.psi_model.eval()
-            valid_phi, valid_psi = 0.0, 0.0  # Skip intractable CD validation
 
             # Determine which models to evaluate/save (EMA or base model)
             phi_eval = self.phi_ema.model if self.phi_ema else self.phi_base
@@ -405,7 +408,9 @@ class SCONETrainer(BaseTrainer):
                     self.reference,
                 )
                 with self._isolated_global_rng(derive_seed(self.seed, "scone_eval")):
-                    metrics.update(eval_callback(eval_wrapper, direction="b"))
+                    metrics.update(
+                        eval_callback(eval_wrapper, direction="b", epoch=epoch)
+                    )
 
                 _log = self.logger.info
             else:

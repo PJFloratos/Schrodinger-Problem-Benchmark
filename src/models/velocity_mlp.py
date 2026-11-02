@@ -1,7 +1,8 @@
-from src.models.components import SinusoidalTimeEmbedding
+from src.models.components import SinusoidalTimeEmbedding, FourierFeatures
 
 import torch
 from torch import nn
+from torch.nn.utils import spectral_norm
 
 import math
 
@@ -58,17 +59,30 @@ class EnergyMLP(nn.Module):
         super().__init__()
         self.model_type = model_type
 
+        if model_type == "ebm":
+            fourier_dim = 64
+            # We scale the frequencies up slightly so it can catch the thin gap between spiral arms
+            self.fourier = FourierFeatures(
+                in_features=d,
+                mapping_size=fourier_dim,
+                scale=0.5,
+                # scale=0.3,
+            )
+            _dim = fourier_dim * 2
+        else:
+            _dim = d
+
         # 1. Spatial Encoder (Identical geometry to VelocityMLP for fair comparison)
         self.x_encoder = nn.Sequential(
-            nn.Linear(d, hidden),
+            nn.Linear(_dim, hidden),
             nn.SiLU(),
-            nn.Linear(hidden, time_dim * 2),
+            nn.Linear(hidden, hidden),
             nn.SiLU(),
         )
 
         # 2. Scalar Potential Decoder
         self.net = nn.Sequential(
-            nn.Linear(time_dim * 2, hidden),
+            nn.Linear(hidden, hidden),
             nn.SiLU(),
             nn.Linear(hidden, hidden),
             nn.SiLU(),
@@ -77,4 +91,8 @@ class EnergyMLP(nn.Module):
 
     def forward(self, x, t=None):
         # Accepts 't' purely for API compatibility with solvers, but ignores it
+        if self.model_type == "ebm":
+            features = self.fourier(x)
+            return self.net(self.x_encoder(features))
+
         return self.net(self.x_encoder(x))

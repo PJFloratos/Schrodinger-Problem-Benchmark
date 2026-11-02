@@ -23,10 +23,13 @@ class EBMTrainer(Trainer):
         metric_logger: Any,
         seed: int,
         sigma: float = 1.0,
+        gamma: float = 1.0,
+        buffer_size: int = 10000,
         ula_steps: int = 50,
         ula_step_size: float = 1e-3,
         spatial_clip: float = 10.0,
         l2_reg: float = 1e-4,
+        gp_weight: float = 0.0,
         ebm_steps: int = 1000,  # K_infer for generation
         eta_min: float = 1e-4,
         cold_start: float = 0.02,
@@ -46,12 +49,19 @@ class EBMTrainer(Trainer):
         self.eta = ula_step_size
         self.eta_min = eta_min
         self.ula_steps = ula_steps
-        # Scale the clip dynamically: weaker prior (high eps) requires larger neural gradients
-        self.spatial_clip = spatial_clip / (sigma**2)
+
+        # Precompute the analytical transition moments at t=1
+        # self.gamma = gamma
+        # self.alpha = math.exp(-self.gamma)
+        # self.beta_sq = (sigma**2 / (2 * self.gamma)) * (1 - math.exp(-2 * self.gamma))
+        # self.beta = math.sqrt(self.beta_sq)
+        self.sigma = sigma
+
         self.l2_reg = l2_reg
         self.ebm_steps = ebm_steps
         self.cold_start = cold_start
-        self.buffer_size = 10000
+        self.buffer_size = buffer_size
+        self.gp_weight = gp_weight
 
     def _init_replay_buffer(self, sample_shape: torch.Size, dtype: torch.dtype) -> None:
         """Initializes the persistent persistent MCMC replay buffer."""
@@ -60,12 +70,18 @@ class EBMTrainer(Trainer):
         )
         shape = (self.buffer_size,) + sample_shape
 
-        self.replay_buffer_x = torch.randn(
-            shape, device=self.device, dtype=dtype, generator=g_init
+        self.replay_buffer_x = (
+            torch.randn(shape, device=self.device, dtype=dtype, generator=g_init)
+            * self.sigma
         )
         self.replay_buffer_y = self.replay_buffer_x + self.sigma * torch.randn(
             shape, device=self.device, dtype=dtype, generator=g_init
         )
+        # self.replay_buffer_y = (
+        #     self.alpha * self.replay_buffer_x
+        #     + self.beta
+        #     * torch.randn(shape, device=self.device, dtype=dtype, generator=g_init)
+        # )
 
     @torch.no_grad()
     def _generate_fake_samples(
@@ -75,6 +91,7 @@ class EBMTrainer(Trainer):
         sample_shape: torch.Size,
         dtype: torch.dtype,
         gen: torch.Generator,
+        y_real: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """The Negative Phase: Uses Unadjusted Langevin Algorithm (ULA) to sample from the model."""
         # 1. Fetch from Replay Buffer
@@ -84,17 +101,25 @@ class EBMTrainer(Trainer):
         x_fake = self.replay_buffer_x[idx].clone()
         y_fake = self.replay_buffer_y[idx].clone()
 
-        # 2. Cold Start Injection (5%)
-        cold = (
+        # This constant wash of fresh prior particles prevents the buffer from
+        # stagnating in "islands" and forces continuous exploration.
+        cold_mask = (
             torch.rand(batch_size, device=self.device, generator=gen) < self.cold_start
         )
-        n_cold = int(cold.sum())
+        n_cold = int(cold_mask.sum())
         if n_cold > 0:
-            xc = torch.randn(
-                (n_cold, *sample_shape), device=self.device, dtype=dtype, generator=gen
+            xc = (
+                torch.randn(
+                    (n_cold, *sample_shape),
+                    device=self.device,
+                    dtype=dtype,
+                    generator=gen,
+                )
+                * self.sigma
             )
-            x_fake[cold] = xc
-            y_fake[cold] = xc + self.sigma * torch.randn(
+            x_fake[cold_mask] = xc
+            # y_fake[cold_mask] = self.alpha * xc + self.beta * torch.randn_like(xc)
+            y_fake[cold_mask] = xc + self.sigma * torch.randn(
                 xc.shape, device=self.device, dtype=dtype, generator=gen
             )
 
@@ -110,7 +135,6 @@ class EBMTrainer(Trainer):
             # y_fake.requires_grad_(True)
             y_fake = y_fake.detach().requires_grad_(True)
             with torch.enable_grad():
-                # psi_fake = model(y_fake)
                 # Let MCMC benefit from AMP if it is enabled
                 with torch.autocast(
                     device_type=self.device.type,
@@ -118,14 +142,13 @@ class EBMTrainer(Trainer):
                     enabled=self.use_amp,
                 ):
                     psi_fake = model(y_fake)
+
                 grad_psi = torch.autograd.grad(
                     outputs=psi_fake.sum(), inputs=y_fake, create_graph=False
                 )[0]
 
-            if self.spatial_clip > 0:
-                grad_psi = grad_psi.clamp(-self.spatial_clip, self.spatial_clip)
-
-            drift = grad_psi + (x_fake - y_fake) / (self.sigma**2)
+            # drift = grad_psi + (self.alpha * x_fake - y_fake) / self.beta_sq
+            drift = grad_psi + (x_fake - y_fake) / self.sigma**2
 
             # Fill the pre-allocated buffer with standard normal noise
             noise_buffer.normal_(generator=gen)
@@ -141,12 +164,45 @@ class EBMTrainer(Trainer):
     def _compute_contrastive_loss(
         self, model: torch.nn.Module, y_real: torch.Tensor, y_fake: torch.Tensor
     ) -> torch.Tensor:
-        """The Positive Phase: Computes Contrastive Divergence + L2 Regularization."""
-        psi_real = model(y_real)
-        psi_gen = model(y_fake.detach())
 
+        # 1. Create fresh leaf tensors strictly for tracking the gradient penalty.
+        # We detach y_fake first so PyTorch doesn't try to backpropagate
+        # all the way through the 80 MCMC loops!
+        y_real_tracked = y_real.detach().requires_grad_(True)
+        y_fake_tracked = y_fake.detach().requires_grad_(True)
+
+        # 2. Forward passes using the specifically tracked tensors
+        psi_real = model(y_real_tracked)
+        psi_gen = model(y_fake_tracked)
+
+        # 3. Standard Contrastive Divergence
         loss = psi_gen.mean() - psi_real.mean()
+
+        # 4. Soft Two-Sided Anchor (Prevents the -2400 runaway scale)
         loss = loss + self.l2_reg * (psi_real.pow(2).mean() + psi_gen.pow(2).mean())
+
+        # 5. Full-Space Gradient Penalty (The Black Hole Preventer)
+        if torch.is_grad_enabled():
+            # Gradients on the data manifold
+            grad_real = torch.autograd.grad(
+                outputs=psi_real.sum(),
+                inputs=y_real_tracked,
+                create_graph=True,
+                retain_graph=True,
+            )[0]
+
+            # Gradients on the MCMC particles
+            grad_fake = torch.autograd.grad(
+                outputs=psi_gen.sum(),
+                inputs=y_fake_tracked,
+                create_graph=True,
+                retain_graph=True,
+            )[0]
+
+            loss = loss + self.gp_weight * (
+                grad_real.pow(2).sum(dim=1).mean() + grad_fake.pow(2).sum(dim=1).mean()
+            )
+
         return loss
 
     def _process_data_loaders(
@@ -175,6 +231,7 @@ class EBMTrainer(Trainer):
                 sample_shape=sample_shape,
                 dtype=y_batch.dtype,
                 gen=gen,
+                y_real=y_batch,
             )
 
             # 3. Update Persistent Chains
@@ -183,9 +240,6 @@ class EBMTrainer(Trainer):
                 self.replay_buffer_y[idx] = y_fake.detach()
 
             # 4. Positive Phase (Loss Computation)
-            if training:
-                self.opt.zero_grad(set_to_none=True)
-
             cm = contextlib.nullcontext() if training else torch.no_grad()
             with cm:
                 with torch.autocast(
@@ -197,33 +251,16 @@ class EBMTrainer(Trainer):
 
             # 5. Model Optimization
             if training:
-                if self.use_amp:
-                    self.scaler.scale(loss).backward()
-                    self.scaler.unscale_(self.opt)
-                else:
-                    loss.backward()
-
-                self.log_inner_step(
-                    model=model,
+                self._optimize_step(
+                    base_model=self.model_base,
+                    opt=self.opt,
+                    scaler=self.scaler,
                     loss=loss,
-                    optimizer=self.opt,
+                    ema=self.ema,
+                    log=True,
                     phase=phase,
-                    ipf_iter=epoch,
+                    epoch=epoch,
                 )
-
-                if self.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model_base.parameters(), self.grad_clip
-                    )
-
-                if self.use_amp:
-                    self.scaler.step(self.opt)
-                    self.scaler.update()
-                else:
-                    self.opt.step()
-
-                if self.use_ema:
-                    self.ema.update(self.model_base)
 
             total_loss += loss.detach().float()
 

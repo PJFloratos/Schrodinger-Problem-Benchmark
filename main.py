@@ -3,6 +3,7 @@
 # https://github.com/atong01/conditional-flow-matching/tree/main/runner/src
 # https://github.com/ngushchin/LightSB/blob/main/src/light_sb.py
 # https://github.com/SKholkin/LightSB-Matching/blob/main/src/lightsbm.py
+# https://github.com/ngushchin/EntropicNeuralOptimalTransport
 
 
 from src.pipeline import Pipeline
@@ -22,7 +23,7 @@ logger = text_logger(__name__)
 
 @hydra.main(version_base="1.3", config_path="configs", config_name="main")
 def main(cfg: DictConfig) -> None:
-    logger.info(f"Loaded Configuration:\n{OmegaConf.to_yaml(cfg)}")
+    # logger.info(f"Loaded Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     torch.backends.cudnn.deterministic = True

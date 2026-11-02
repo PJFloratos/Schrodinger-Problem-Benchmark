@@ -1,4 +1,4 @@
-from src.models import VelocityMLP, EnergyMLP, SimpleUNet
+from src.models import VelocityMLP, EnergyMLP, SimpleUNet, EnergyUNet
 from src.models.components import LightSBM
 from src.training import (
     Trainer,
@@ -7,17 +7,23 @@ from src.training import (
     SF2MTrainer,
     EBMTrainer,
     SCONETrainer,
+    ENOTTrainer,
 )
 from src.metrics import Evaluator
-from src.metrics.plot import generate_and_plot
+from src.metrics.plot import (
+    generate_and_plot,
+    visualize_energy_landscape,
+    visualize_enot_landscape,
+)
 from src.utils import text_logger
 from src.utils.seed import derive_seed
 
 import torch
 from torch import optim
 
+import os
 from omegaconf import DictConfig
-from typing import Callable, Any, Dict, Tuple
+from typing import Callable, Any, Dict, Tuple, Optional
 
 
 class Pipeline:
@@ -39,7 +45,7 @@ class Pipeline:
 
         # Convert string device to torch.device
         self.device = torch.device(
-            "cuda" if torch.cuda.is_available() and self.device == "cuda" else "cpu"
+            "cuda" if torch.cuda.is_available() and cfg.device == "cuda" else "cpu"
         )
 
         # Safely extract variables that might be overridden by the dataset config
@@ -52,15 +58,29 @@ class Pipeline:
         self.use_ema = self.cfg.model.get("use_ema", self.cfg.use_ema)
         self.weight_decay = self.cfg.model.get("weight_decay", self.cfg.weight_decay)
 
+        # Safely fetch the dataset scale (fallback to 1.0 for image datasets)
+        self.dataset_scale = getattr(self.train_dataset, "scale", 1.0)
+
+        # Mapped Sigma: \tilde{\sigma} = \sigma_{raw} / s
+        self.normalized_sigma = self.cfg.sigma / self.dataset_scale
+
+        self.gamma = self.cfg.gamma
+
+        self.logger.info(
+            f"Physics Scaled: sigma_raw={self.cfg.sigma} -> "
+            f"sigma_norm={self.normalized_sigma:.5f} (scale={self.dataset_scale:.3f}) "
+            f"gamma={self.gamma:.3f} (Invariant)"
+        )
+
         # Extract solver-specific kwargs directly from the config
         solver_kwargs = {}
         if self.cfg.model.type == "ebm":
             solver_kwargs = {
-                "sigma": self.cfg.sigma,
+                "sigma": self.normalized_sigma,
+                "gamma": self.gamma,
                 "eta_max_infer": self.cfg.model.get("ula_step_size", 1e-3),
                 "eta_min_infer": self.cfg.model.get("eta_min_infer", 1e-4),
-                "spatial_clip": self.cfg.model.get("spatial_clip", 10.0)
-                / (self.cfg.sigma**2),
+                "spatial_clip": self.cfg.model.get("spatial_clip", 10.0),
                 "ebm_steps": self.cfg.model.get("ebm_steps", 1000),
             }
 
@@ -95,9 +115,8 @@ class Pipeline:
             num_samples=self.cfg.eval_gen_samples,
         )
 
-        # 4. Visualize
+        # 4. Visualize final generation samples
         if visualize:
-            self.logger.info("Generating plots and visualizing results...")
             generate_and_plot(generative_model, eval_res, self.cfg)
 
         return generative_model, eval_res
@@ -118,21 +137,28 @@ class Pipeline:
             return self._run_ebm()
         elif self.cfg.model.type == "scone":
             return self._run_scone()
+        elif self.cfg.model.type == "enot":
+            return self._run_enot()
         else:
             return self._run_standard()
 
     def _eval_callback(
-        self, model: torch.nn.Module, direction: str
+        self, model: torch.nn.Module, direction: str, epoch: Optional[int] = None
     ) -> Dict[str, float]:
         """Internal callback passed to the trainers for mid-training evaluation."""
-        return self.evaluator.evaluate(
+        eval_res = self.evaluator.evaluate(
             model,
             num_samples=self.cfg.track_gen_samples,
             use_amp=self.cfg.use_amp,
             direction=direction,
+            epoch=epoch,
+            cfg=self.cfg,
+            trainer=self.trainer,
         )
 
-    def _get_model_class_and_kwargs(self):
+        return eval_res
+
+    def _get_model_class_and_kwargs(self, model_type: str):
         """Resolves the base architecture based on the dataset config."""
         # Safely resolve the flattened dimension for models that require a 1D state space
         if "input_dim" in self.cfg.dataset:
@@ -142,24 +168,32 @@ class Pipeline:
                 self.cfg.dataset.image_size**2
             )
 
-        if self.cfg.model.type == "lightsbm":
+        if model_type == "lightsbm":
             return LightSBM, {
                 "dim": flat_dim,
                 "n_potentials": self.cfg.model.get("n_potentials", 1000),
-                "epsilon": self.cfg.sigma**2,
+                "epsilon": self.normalized_sigma**2,
             }
 
         if "input_dim" in self.cfg.dataset:
-            model_cls = (
-                EnergyMLP if self.cfg.model.type in ["ebm", "scone"] else VelocityMLP
-            )
+            # SCONE, EBM, and ENOT's Dual Potential require a scalar Energy/Potential architecture
+            if model_type in ["ebm", "scone", "enot_potential"]:
+                model_cls = EnergyMLP
+            else:
+                model_cls = VelocityMLP
+
             return model_cls, {
                 "d": flat_dim,
                 "hidden": self.cfg.hidden_dim,
                 "time_dim": self.cfg.time_dim,
             }
 
-        return SimpleUNet, {
+        if model_type in ["ebm", "scone", "enot_potential"]:
+            model_cls = EnergyUNet
+        else:
+            model_cls = SimpleUNet
+
+        return model_cls, {
             "channels": self.cfg.dataset.input_channels,
             "image_size": self.cfg.dataset.image_size,
         }
@@ -172,7 +206,7 @@ class Pipeline:
         fork_rng snapshots the global CPU/CUDA RNG state and restores it on exit,
         so the seeding done here does not disturb the rest of the run.
         """
-        model_class, kwargs = self._get_model_class_and_kwargs()
+        model_class, kwargs = self._get_model_class_and_kwargs(model_type)
 
         with torch.random.fork_rng():
             torch.manual_seed(derive_seed(self.cfg.seed, context))
@@ -192,25 +226,13 @@ class Pipeline:
         )
         self.logger.info(f"Standard Model deployed on: {self.device}")
 
-        if self.cfg.model.type == "lightsbm":
-            self.logger.debug("Performing data-driven initialization for LightSBM .")
-            # Extract exactly n_potentials samples from the dataset
-            samples = []
-            for i in range(self.cfg.model.get("n_potentials", 1000)):
-                # Safely handle datasets that might return tuples (e.g., (data, label))
-                # item = self.train_dataset[i]
-                # if isinstance(item, tuple) or isinstance(item, list):
-                #     item = item[0]  # Assuming the target data is the first element
-                samples.append(self.train_dataset[i])
-
-            # Stack and push to the correct device
-            init_samples = torch.stack(samples).to(self.device)
-
-            # Overwrite the random normal initialization
-            model.init_r_by_samples(init_samples)
+        # Data-driven initialization
+        if hasattr(model, "init_from_dataset"):
             self.logger.debug(
-                f"Successfully initialized {self.cfg.model.get("n_potentials", 1000)} Gaussian centers."
+                f"Performing data-driven initialization for {self.cfg.model.type}."
             )
+            model.init_from_dataset(self.train_dataset)
+            self.logger.debug("Successfully initialized data-driven parameters.")
 
         opt = optim.AdamW(
             model.parameters(),
@@ -219,7 +241,7 @@ class Pipeline:
             fused=True if self.device.type == "cuda" else False,
         )
 
-        trainer = Trainer(
+        self.trainer = Trainer(
             model=model,
             dataset=self.train_dataset,
             batch_size=self.batch_size,
@@ -227,19 +249,20 @@ class Pipeline:
             metric_logger=self.metric_logger,
             seed=self.cfg.seed,
             device=self.device,
-            sigma=self.cfg.sigma,
+            sigma=self.normalized_sigma,
             grad_clip=self.cfg.grad_clip,
             use_amp=self.cfg.use_amp,
             use_ema=self.cfg.use_ema,
-            use_compile=self.cfg.use_compile,
+            use_compile=self.use_compile,
         )
 
-        gen_model, metrics = trainer.fit(
+        gen_model, metrics = self.trainer.fit(
             epochs=self.cfg.epochs,
             save_per=self.cfg.model.get("save_interval", 500),
             save_path=self.cfg.models_path,
             eval_callback=self._eval_callback,
             eval_per=self.cfg.eval_per,
+            plot_epoch=self.cfg.plot_epoch,
         )
 
         return gen_model, metrics
@@ -260,7 +283,7 @@ class Pipeline:
             weight_decay=self.cfg.weight_decay,
         )
 
-        trainer = IPFTrainer(
+        self.trainer = IPFTrainer(
             forward_model=f_model,
             backward_model=b_model,
             dataset=self.train_dataset,
@@ -269,7 +292,7 @@ class Pipeline:
             device=self.device,
             metric_logger=self.metric_logger,
             seed=self.cfg.seed,
-            sigma=self.cfg.sigma,
+            sigma=self.normalized_sigma,
             batch_size=self.batch_size,
             sde_steps=self.cfg.model.get("sim_steps", 200),
             num_cache_batches=self.cfg.model.get("num_cache_batches", 10),
@@ -279,7 +302,7 @@ class Pipeline:
             use_ema=self.cfg.use_ema,
         )
 
-        gen_model, metrics = trainer.fit(
+        gen_model, metrics = self.trainer.fit(
             ipf_iterations=self.cfg.epochs,
             inner_iterations=self.cfg.model.get("num_iter", 5000),
             save_per=self.cfg.model.get("save_interval", 500),
@@ -306,7 +329,7 @@ class Pipeline:
             weight_decay=self.cfg.weight_decay,
         )
 
-        trainer = IMFTrainer(
+        self.trainer = IMFTrainer(
             forward_model=f_model,
             backward_model=b_model,
             dataset=self.train_dataset,
@@ -315,7 +338,7 @@ class Pipeline:
             device=self.device,
             metric_logger=self.metric_logger,
             seed=self.cfg.seed,
-            sigma=self.cfg.sigma,
+            sigma=self.normalized_sigma,
             batch_size=self.batch_size,
             sde_steps=self.cfg.model.get("sim_steps", 200),
             num_cache_batches=self.cfg.model.get("num_cache_batches", 10),
@@ -323,9 +346,10 @@ class Pipeline:
             refresh_every=self.cfg.model.get("refresh_every", 500),
             use_amp=self.cfg.use_amp,
             use_ema=self.cfg.use_ema,
+            use_compile=self.use_compile,
         )
 
-        gen_model, metrics = trainer.fit(
+        gen_model, metrics = self.trainer.fit(
             imf_iterations=self.cfg.epochs,
             inner_iterations=self.cfg.model.get("num_iter", 5000),
             save_per=self.cfg.model.get("save_interval", 500),
@@ -352,7 +376,7 @@ class Pipeline:
             weight_decay=self.cfg.weight_decay,
         )
 
-        trainer = SF2MTrainer(
+        self.trainer = SF2MTrainer(
             u_model=u_model,
             s_model=s_model,
             dataset=self.train_dataset,
@@ -361,7 +385,7 @@ class Pipeline:
             device=self.device,
             metric_logger=self.metric_logger,
             seed=self.cfg.seed,
-            sigma=self.cfg.sigma,
+            sigma=self.normalized_sigma,
             batch_size=self.batch_size,
             sde_steps=self.cfg.model.get("sim_steps", 200),
             num_cache_batches=self.cfg.model.get("num_cache_batches", 10),
@@ -371,7 +395,7 @@ class Pipeline:
             use_ema=self.cfg.use_ema,
         )
 
-        gen_model, metrics = trainer.fit(
+        gen_model, metrics = self.trainer.fit(
             outer_iterations=self.cfg.epochs,
             inner_iterations=self.cfg.model.get("num_iter", 5000),
             save_per=self.cfg.model.get("save_interval", 500),
@@ -392,7 +416,7 @@ class Pipeline:
             weight_decay=self.cfg.weight_decay,
         )
 
-        trainer = EBMTrainer(
+        self.trainer = EBMTrainer(
             model=model,
             dataset=self.train_dataset,
             batch_size=self.batch_size,
@@ -400,7 +424,10 @@ class Pipeline:
             metric_logger=self.metric_logger,
             seed=self.cfg.seed,
             device=self.device,
-            sigma=self.cfg.sigma,
+            sigma=self.normalized_sigma,
+            gamma=self.gamma,
+            buffer_size=self.cfg.model.get("buffer_size", 0),
+            gp_weight=self.cfg.model.get("gp_weight", 0),
             ula_steps=self.cfg.model.get("ula_steps", 30),
             ula_step_size=self.cfg.model.get("ula_step_size", 5e-3),
             spatial_clip=self.cfg.model.get("spatial_clip", 50.0),
@@ -413,12 +440,13 @@ class Pipeline:
         )
 
         # Standard epoch orchestration inherited from Trainer
-        gen_model, metrics = trainer.fit(
+        gen_model, metrics = self.trainer.fit(
             epochs=self.cfg.epochs,
             save_per=self.cfg.model.get("save_interval", 500),
             save_path=self.cfg.models_path,
             eval_callback=self._eval_callback,
             eval_per=self.cfg.eval_per,
+            plot_epoch=self.cfg.plot_epoch,
         )
 
         return gen_model, metrics
@@ -439,7 +467,7 @@ class Pipeline:
             weight_decay=self.cfg.weight_decay,
         )
 
-        trainer = SCONETrainer(
+        self.trainer = SCONETrainer(
             phi_model=phi_model,
             psi_model=psi_model,
             dataset=self.train_dataset,
@@ -449,21 +477,87 @@ class Pipeline:
             metric_logger=self.metric_logger,
             seed=self.cfg.seed,
             device=self.device,
-            sigma=self.cfg.sigma,
+            sigma=self.normalized_sigma,
             reference=self.cfg.reference,
+            spatial_clip=self.cfg.model.get("spatial_clip", 0.0),
+            cold_start=self.cfg.model.get("cold_start", 0.0),
+            buffer_size=self.cfg.model.get("buffer_size", 0),
             ula_steps=self.cfg.model.get("ula_steps", 30),
             ula_step_size=self.cfg.model.get("ula_step_size", 5e-3),
             eta_min=self.cfg.model.get("eta_min_infer", 1e-4),
-            spatial_clip=self.cfg.model.get("spatial_clip", 50.0),
             l2_reg=self.cfg.model.get("l2_reg", 1e-4),
             use_amp=self.cfg.use_amp,
             use_ema=self.cfg.use_ema,
             use_compile=False,  # Disable compile to protect double-autograd
         )
 
-        gen_model, metrics = trainer.fit(
+        gen_model, metrics = self.trainer.fit(
             epochs=self.cfg.epochs,
             save_per=self.cfg.model.get("save_interval", 500),
+            eval_callback=self._eval_callback,
+            eval_per=self.cfg.eval_per,
+        )
+
+        return gen_model, metrics
+
+    def _run_enot(self) -> torch.nn.Module:
+        drift_model = self._build_model(
+            "enot_drift", "enot_drift_init", name="drift_model"
+        )
+        potential_model = self._build_model(
+            "ebm", "enot_potential_init", name="potential_model"
+        )
+        self.logger.info(f"ENOT Dual Models deployed on: {self.device}")
+
+        # Extract specific learning rates for TTUR (Two Time-Scale Update Rule)
+        g_lr = self.cfg.model.get("drift_lr", self.learning_rate)
+        d_lr = self.cfg.model.get("potential_lr", self.learning_rate / 10.0)
+
+        drift_opt = optim.AdamW(
+            drift_model.parameters(),
+            lr=g_lr,
+            weight_decay=self.weight_decay,
+        )
+        potential_opt = optim.AdamW(
+            potential_model.parameters(),
+            lr=d_lr,
+            weight_decay=self.weight_decay,
+        )
+
+        weight_cfg = self.cfg.model.get("energy_weight", "auto")
+        if weight_cfg == "auto":
+            # Exact mathematical Schrödinger Bridge formulation: 1 / (2 * epsilon)
+            energy_weight = 1.0 / (2.0 * (self.normalized_sigma**2))
+        else:
+            # If you hardcoded a float in the yaml like `energy_weight: 0.5`
+            energy_weight = float(weight_cfg)
+
+        self.trainer = ENOTTrainer(
+            drift_model=drift_model,
+            potential_model=potential_model,
+            dataset=self.train_dataset,
+            batch_size=self.batch_size,
+            drift_opt=drift_opt,
+            potential_opt=potential_opt,
+            metric_logger=self.metric_logger,
+            seed=self.cfg.seed,
+            device=self.device,
+            sigma=self.normalized_sigma,
+            inner_iters=self.cfg.model.get("inner_iters", 5),
+            integration_steps=self.cfg.model.get("integration_steps", 50),
+            energy_weight=energy_weight,
+            potential_reg=self.cfg.model.get("potential_reg", 1e-3),
+            gp_weight=self.cfg.model.get("gp_weight", 0.0),
+            grad_clip=self.cfg.grad_clip,
+            use_amp=self.use_amp,
+            use_ema=self.use_ema,
+            use_compile=self.use_compile,  # ENOT uses standard backprop through time, so compilation is safe
+        )
+
+        gen_model, metrics = self.trainer.fit(
+            epochs=self.cfg.epochs,
+            save_per=self.cfg.model.get("save_interval", 500),
+            save_path=self.cfg.models_path,
             eval_callback=self._eval_callback,
             eval_per=self.cfg.eval_per,
         )

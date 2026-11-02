@@ -1,5 +1,6 @@
 from src.datasets.data_utils import get_dataset
 
+import torch
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
 
@@ -87,22 +88,16 @@ def inspect_dataset(cfg: DictConfig) -> None:
     save_path = os.path.join(base_plot_dir, f"ground_truth_{cfg.dataset.name}.png")
 
     # Load data
-    _, dataset = get_dataset(cfg)
+    train, test = get_dataset(cfg)
 
     # Duck-typing: 2D Toy Data vs Images
     if "input_dim" in cfg.dataset:
-        points = dataset.data.numpy()
-
-        plt.figure(figsize=(6, 6))
-        plt.scatter(points[:, 0], points[:, 1], s=2, alpha=0.8, color="darkorange")
-        plt.title(f"Ground Truth Distribution: {cfg.dataset.name}")
-
-        plt.savefig(save_path)
-        plt.close()
+        check_toy(cfg, train, test)
+        plot_toy(cfg, train, test, save_path)
 
     elif "input_channels" in cfg.dataset:
         # Use a DataLoader to grab a random batch of 64 images
-        dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
+        dataloader = DataLoader(test, batch_size=64, shuffle=True)
         batch = next(iter(dataloader))
 
         # Safely extract tensor if dataset returns (image, label) tuples
@@ -128,6 +123,66 @@ def inspect_dataset(cfg: DictConfig) -> None:
         )
 
     print(f"Dataset plot successfully saved to {save_path}")
+
+
+def check_toy(cfg, train, test):
+    xtr, xte = train.data, test.data
+    d = xtr.shape[1]
+
+    def report(name, x):
+        m2 = (x**2).sum(1).mean().item() / d
+        print(
+            f"{name:6s} n={len(x):6d} mean={x.mean(0).numpy().round(3)} "
+            f"E|x|^2/d={m2:.3f} min={x.min().item():.2f} max={x.max().item():.2f}"
+        )
+
+    report("train", xtr)
+    report("test", xte)
+    print(f"scale={train.scale:.4f}  mean_raw={train.mean.round(3)}")
+
+    # sizes and independence
+    assert len(train) == cfg.dataset.train_samples
+    assert len(test) == cfg.dataset.test_samples
+    n = min(len(xtr), len(xte), 100)
+    assert not torch.equal(xtr[:n], xte[:n]), "train and test are identical!"
+
+    if cfg.dataset.type == "gaussian":
+        cov = torch.cov(xtr.T)
+        print("empirical cov:\n", cov.numpy().round(3), "\nanalytic var:", train.var)
+        assert torch.allclose(
+            xtr.mean(0), torch.tensor(train.mu, dtype=torch.float32), atol=0.1
+        )
+        assert torch.allclose(cov, train.var * torch.eye(2), atol=0.15)
+    else:
+        assert xtr.mean(0).abs().max() < 0.05
+        assert abs((xtr**2).sum(1).mean().item() / d - 1) < 0.05
+        assert abs((xte**2).sum(1).mean().item() / d - 1) < 0.10  # uses train stats
+
+
+def plot_toy(cfg, train, test, save_path):
+    g = torch.Generator().manual_seed(cfg.eval_seed)
+    prior = torch.randn(len(train), 2, generator=g)
+    panels = [
+        ("train (pi_1)", train.data),
+        ("test (pi_1)", test.data),
+        ("prior N(0,I)", prior),
+    ]
+
+    allpts = torch.cat([p for _, p in panels])
+    lim = float(allpts.abs().max()) * 1.05
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharex=True, sharey=True)
+    for ax, (title, pts) in zip(axes, panels):
+        pts = pts.numpy()
+        ax.scatter(pts[:, 0], pts[:, 1], s=2, alpha=0.5)
+        ax.set_title(title)
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        ax.set_aspect("equal")
+        ax.grid(alpha=0.3)
+    fig.suptitle(f"{cfg.dataset.type}  (scale={train.scale:.3f})")
+    fig.savefig(save_path, bbox_inches="tight")
+    plt.close(fig)
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="main")

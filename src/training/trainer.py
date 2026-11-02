@@ -17,16 +17,6 @@ from typing import Callable, Tuple, Dict, Union, Any, Optional
 class Trainer(BaseTrainer):
     logger = text_logger(__name__)
 
-    # ------------------------------------------------------------------
-    # Seeding design
-    #
-    # Weight init is already handled by TrainingOrchestrator._build_model
-    # (fork_rng + seed + {0, 1}). Everything the trainer randomises gets its OWN
-    # generator, seeded from (seed + offset), so no stream depends on how many
-    # numbers any other consumer (eval, other loaders, other solvers) has drawn.
-    # Offsets start at 1000 to stay clear of the init offsets (0, 1).
-    # ------------------------------------------------------------------
-
     def __init__(
         self,
         model: nn.Module,
@@ -80,9 +70,6 @@ class Trainer(BaseTrainer):
             create_sampler=False,
         )
 
-    # ------------------------------------------------------------------
-    # Data
-    # ------------------------------------------------------------------
     def _get_loaders(self) -> Tuple[DataLoader, DataLoader]:
         split_gen = torch.Generator().manual_seed(derive_seed(self.seed, "train_split"))
 
@@ -92,37 +79,11 @@ class Trainer(BaseTrainer):
             generator=split_gen,
         )
 
-        is_toy_data = len(self.data_shape) == 1
-        num_workers = 0 if is_toy_data else 2
-
-        train_dl = DataLoader(
-            train_ds,
-            self.batch_size,
-            shuffle=True,
-            num_workers=num_workers,
-            pin_memory=not is_toy_data,
-            drop_last=True,
-            generator=torch.Generator().manual_seed(
-                derive_seed(self.seed, "train_shuffle")
-            ),
-        )
-        valid_dl = DataLoader(
-            valid_ds,
-            self.batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=not is_toy_data,
-            drop_last=True,
-            generator=torch.Generator().manual_seed(
-                derive_seed(self.seed, "train_valid_loader")
-            ),
-        )
+        train_dl = self._get_loader(train_ds, "train_shuffle")
+        valid_dl = self._get_loader(valid_ds, "train_valid_loader")
 
         return train_dl, valid_dl
 
-    # ------------------------------------------------------------------
-    # Training & Validation
-    # ------------------------------------------------------------------
     def _process_data_loaders(
         self, dl: DataLoader, epoch: int, model: nn.Module
     ) -> Tuple[float, float]:
@@ -168,37 +129,16 @@ class Trainer(BaseTrainer):
                 )
 
             if training:
-                self.opt.zero_grad(set_to_none=True)
-
-                if self.use_amp:
-                    self.scaler.scale(loss).backward()
-                    self.scaler.unscale_(self.opt)
-                else:
-                    loss.backward()
-
-                # --- BaseTrainer Inner Metric Hook ---
-                self.log_inner_step(
-                    model=model,
-                    loss=loss,
-                    optimizer=self.opt,
+                self._optimize_step(
+                    self.model_base,
+                    self.opt,
+                    self.scaler,
+                    loss,
+                    self.ema,
+                    log=True,
                     phase=phase,
-                    ipf_iter=epoch,
+                    epoch=epoch,
                 )
-
-                if self.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model_base.parameters(), self.grad_clip
-                    )
-
-                if self.use_amp:
-                    self.scaler.step(self.opt)
-                    self.scaler.update()
-                else:
-                    self.opt.step()
-
-                if self.use_ema:
-                    # EMA tracks the live weights after every optimizer step
-                    self.ema.update(self.model_base)
 
             total_loss += loss.detach().float()
 
@@ -237,6 +177,7 @@ class Trainer(BaseTrainer):
         save_path: Union[str, None] = None,
         eval_per: Optional[int] = None,
         eval_callback: Optional[Callable] = None,
+        plot_epoch: bool = False,
     ) -> Dict:
         Trainer.logger.debug("Start Training Process...")
 
@@ -281,7 +222,14 @@ class Trainer(BaseTrainer):
             if _run_eval:
                 # 'b' direction used traditionally for generative path evaluation
                 with self._isolated_global_rng(derive_seed(self.seed, "train_eval")):
-                    metrics.update(eval_callback(eval_model, direction="b"))
+                    _epoch = epoch if plot_epoch else None
+                    metrics.update(
+                        eval_callback(eval_model, direction="b", epoch=_epoch)
+                    )
+
+                _log = self.logger.info
+            else:
+                _log = self.logger.debug
 
             # --- BaseTrainer Outer Metric Hooks ---
             self.log_phase_end("epoch", epoch, metrics)
@@ -289,10 +237,6 @@ class Trainer(BaseTrainer):
 
             # Logging
             qual_str = self._format_eval_str(metrics, _run_eval)
-            if _run_eval:
-                _log = self.logger.info
-            else:
-                _log = self.logger.debug
 
             if valid_loss:
                 _log(

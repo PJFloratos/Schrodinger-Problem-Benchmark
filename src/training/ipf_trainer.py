@@ -189,12 +189,15 @@ class IPFTrainer(BaseTrainer):
             if direction == "f":
                 x = self._next_data()
             else:
-                x = torch.randn(
-                    self.batch_size,
-                    *self.data_shape,
-                    device=self.device,
-                    generator=self.noise_gen,
-                ).contiguous(memory_format=self.memory_format)
+                x = (
+                    torch.randn(
+                        self.batch_size,
+                        *self.data_shape,
+                        device=self.device,
+                        generator=self.noise_gen,
+                    ).contiguous(memory_format=self.memory_format)
+                    * self.sigma
+                )
 
             b_size = x.shape[0]
 
@@ -293,29 +296,16 @@ class IPFTrainer(BaseTrainer):
                     sigma=self.sigma,
                 )
 
-            if self.use_amp:
-                scaler.scale(loss).backward()
-                scaler.unscale_(opt)
-            else:
-                loss.backward()
-
-            # --- BaseTrainer Metric Hook ---
-            self.log_inner_step(target_model, loss, opt, phase=phase, ipf_iter=ipf_iter)
-
-            if self.grad_clip:
-                torch.nn.utils.clip_grad_norm_(
-                    target_model.parameters(), self.grad_clip
-                )
-
-            if self.use_amp:
-                scaler.step(opt)
-                scaler.update()
-            else:
-                opt.step()
-
-            if self.use_ema:
-                # EMA tracks the live weights after every optimizer step
-                ema_helper.update(target_model)
+            self._optimize_step(
+                target_model,
+                opt,
+                scaler,
+                loss,
+                ema_helper,
+                log=True,
+                phase=phase,
+                epoch=ipf_iter,
+            )
 
             total_loss += loss.detach().float()
 
@@ -384,12 +374,14 @@ class IPFTrainer(BaseTrainer):
                     # Trigger the evaluator purely as a callback
                     b_metrics.update(eval_callback(b_eval, direction="b"))
 
+                _log = self.logger.info
+            else:
+                _log = self.logger.debug
+
             self.log_phase_end("backward", n, b_metrics)
 
             qual_str = self._format_eval_str(b_metrics, _run_eval, prefix="B-")
-            self.logger.info(
-                f"Iteration {n} (Backward) | B-Loss: {b_loss:.4f} | {qual_str}"
-            )
+            _log(f"Iteration {n} (Backward) | B-Loss: {b_loss:.4f} | {qual_str}")
 
             # ==========================================
             # Phase 2: Train Forward Model
@@ -422,9 +414,7 @@ class IPFTrainer(BaseTrainer):
             self.log_phase_end("forward", n, f_metrics)
 
             qual_str = self._format_eval_str(f_metrics, _run_eval, prefix="F-")
-            self.logger.info(
-                f"Iteration {n} (Forward) | F-Loss: {f_loss:.4f} | {qual_str}"
-            )
+            _log(f"Iteration {n} (Forward) | F-Loss: {f_loss:.4f} | {qual_str}")
 
             # --- Outer-Loop Diagnostics ---
             self.track_parameter_drift(self.b_model, ipf_iter=n)

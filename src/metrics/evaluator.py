@@ -6,6 +6,11 @@ from src.metrics.distances import (
     get_drift_mse,
     get_generative_quality_metrics,
 )
+from src.metrics.plot import (
+    generate_and_plot,
+    visualize_energy_landscape,
+    visualize_enot_landscape,
+)
 from src.utils.seed import derive_seed
 from src.utils import text_logger
 
@@ -18,6 +23,7 @@ import numpy as np
 from scipy.stats import wasserstein_distance
 from scipy.optimize import linear_sum_assignment
 
+import os
 import math
 import time
 from tqdm import tqdm
@@ -106,11 +112,22 @@ class Evaluator:
         log: bool = False,
         use_amp: bool = True,
         direction: str = "b",
+        epoch: Optional[int] = None,
+        cfg: Optional[Any] = None,
+        trainer: Optional[Any] = None,
     ) -> Dict[str, float]:
 
         with torch.random.fork_rng(devices=self._rng_devices):
             return self._evaluate(
-                model, backward_model, num_samples, log, use_amp, direction
+                model,
+                backward_model,
+                num_samples,
+                log,
+                use_amp,
+                direction,
+                epoch,
+                cfg,
+                trainer,
             )
 
     def _evaluate(
@@ -121,78 +138,34 @@ class Evaluator:
         log: bool,
         use_amp: bool,
         direction: str,
+        epoch: Optional[int] = None,
+        cfg: Optional[Any] = None,
+        trainer: Optional[Any] = None,
     ) -> Dict[str, float]:
         model.eval()
         if backward_model:
             backward_model.eval()
 
+        # 1. Fetch & prep data setup
         # Delegate dataset fetching to _get_test_data unconditionally to ensure
         # it is cached in self._x_test and reused efficiently across evaluations.
         x_true = self._get_test_data()
+        n_eval = self._determine_eval_samples(len(x_true), num_samples)
 
-        # FID / precision / recall / MMD depend on the sample counts, so both sides use
-        # exactly N samples. N can't exceed the number of real samples available.
-        n_wanted = num_samples if num_samples else len(x_true)
-        n_eval = min(n_wanted, len(x_true))
-        if n_eval < n_wanted:
-            Evaluator.logger.warning(
-                f"Requested {n_wanted} samples but the test set only has "
-                f"{len(x_true)}; evaluating with {n_eval}."
-            )
-
+        # 2. Validation Loss (if applicable)
         loss = None
-        sampler = EulerSampler(
-            model_type=model.model_type,
-            steps=self.sde_steps,
-            use_amp=use_amp,
-        )
-
         if direction == "b":
-            # Validation & Simulation
             loss = self._compute_validation_loss(model, direction, use_amp)
 
-            # Backward Chain: Prior -> Data
-            gen_start = time.time()
-            x_gen = sampler.generate(
-                model=model,
-                shape=self.data_shape,
-                n_samples=n_eval,
-                device=self.device,
-                init_seed=derive_seed(self.seed, "eval_solver_init"),
-                step_seed=derive_seed(self.seed, "eval_solver_step"),
-                **self.solver_kwargs,
-            )
-            gen_time = time.time() - gen_start
+        # 3. Generate Samples
+        sampler = EulerSampler(
+            model_type=model.model_type, steps=self.sde_steps, use_amp=use_amp
+        )
+        x_gen, x_ref, gen_time = self._generate_samples(
+            model, sampler, x_true, n_eval, direction
+        )
 
-            # Real reference set of the same size
-            x_ref = x_true[self._ref_perm[:n_eval]]
-        else:
-            # Forward Chain: Data -> Prior
-            # 1. Forward Chain: Data -> Prior
-            x_init = x_true[self._ref_perm[:n_eval]].to(
-                self.device, memory_format=self.memory_format
-            )
-
-            gen_start = time.time()
-            x_gen = sampler.generate(
-                model=model,
-                x_init=x_init,
-                batch_size=256,
-                step_seed=self._forward_sim_seed,
-                **self.solver_kwargs,
-            )
-            gen_time = time.time() - gen_start
-
-            # Re-seed prior target generator
-            self._prior_gen.manual_seed(self._prior_seed)
-            x_ref = torch.randn(
-                x_gen.shape,
-                device=self.device,
-                dtype=x_gen.dtype,
-                generator=self._prior_gen,
-            ).contiguous(memory_format=self.memory_format)
-
-        # Eval Metrics
+        # 4. Compute Metrics
         results = {
             "eval_samples": n_eval,
             "eval_NFEs": self.sde_steps,
@@ -201,29 +174,39 @@ class Evaluator:
         if loss is not None:
             results["eval_loss"] = float(loss)
 
-        if self.is_image_data and direction == "b":
-            results.update(get_generative_quality_metrics(x_ref, x_gen))
-        else:
-            results["eval_MMD"] = float(get_mmd(x_ref, x_gen, device=self.device))
+        metrics = self._compute_metrics(model, x_gen, x_ref, direction)
+        results.update(metrics)
 
-            # Ground Truth
-            if self.ground_truth_v and direction == "b" and model.model_type != "ebm":
-                results["drift_MSE"] = get_drift_mse(model, self.ground_truth_v, x_gen)
-
+        # 5. Logging and Visualization
         if log:
-            self.logger.info("Evaluation Metrics:")
-            for k, v in results.items():
-                if isinstance(v, float):
-                    self.logger.info(f"{k:>20}: {v:.6f}")
-                else:
-                    self.logger.info(f"{k:>20}: {v}")
+            self._log_results(results)
+
+        if epoch and cfg:
+            self._visualize(model, results, x_true, epoch, cfg, trainer)
 
         return results
+
+    # -------------------------------------------------------------------------
+    # Modular Helper Methods
+    # -------------------------------------------------------------------------
 
     def _get_test_data(self) -> torch.Tensor:
         if self._x_test is None:
             self._x_test = torch.cat([z.cpu() for z in self.dl], dim=0)
         return self._x_test
+
+    def _determine_eval_samples(
+        self, total_avail: int, requested: Optional[int]
+    ) -> int:
+        """Determines the number of samples to evaluate based on availability."""
+        n_wanted = requested if requested else total_avail
+        n_eval = min(n_wanted, total_avail)
+        if n_eval < n_wanted:
+            Evaluator.logger.warning(
+                f"Requested {n_wanted} samples but the test set only has "
+                f"{total_avail}; evaluating with {n_eval}."
+            )
+        return n_eval
 
     def _compute_validation_loss(
         self, model: nn.Module, direction: str, use_amp: bool
@@ -232,7 +215,7 @@ class Evaluator:
 
         # EBM loss requires MCMC and spatial autograd. The EBMTrainer handles this.
         # We bypass it here to prevent inference_mode crashes.
-        if model.model_type in ["ebm", "scone"]:
+        if model.model_type in ["ebm", "scone", "enot_drift"]:
             return None
 
         gen = self._noise_gen
@@ -308,8 +291,6 @@ class Evaluator:
                         # SF2M wrapper holds both networks; we query them directly
                         v_pred = model.u(x_t, t_net)
                         eps_pred = model.s(x_t, t_net)
-                        # v_pred = model.u(x_t, t)
-                        # eps_pred = model.s(x_t, t)
                         v_target, eps_target = target_u
 
                         loss_v, loss_eps = ConditionalVectorField.compute_sf2m_loss(
@@ -319,7 +300,6 @@ class Evaluator:
                     else:
                         # Standard single-network models (SDE, Flow Matching, Minibatch, IMF)
                         pred_u = model(x_t, t_net)
-                        # pred_u = model(x_t, t)
                         batch_loss = ConditionalVectorField.compute_loss(
                             model_type=eval_model_type,
                             pred_u=pred_u,
@@ -331,3 +311,167 @@ class Evaluator:
                 total_loss += batch_loss.item()
 
         return total_loss / len(self.dl)
+
+    def _generate_samples(
+        self,
+        model: nn.Module,
+        sampler: EulerSampler,
+        x_true: torch.Tensor,
+        n_eval: int,
+        direction: str,
+    ) -> Tuple[torch.Tensor, torch.Tensor, float]:
+        """Handles the forward or backward generation chains."""
+        gen_start = time.time()
+
+        if direction == "b":
+            # Backward Chain: Prior -> Data
+            x_gen = sampler.generate(
+                model=model,
+                shape=self.data_shape,
+                n_samples=n_eval,
+                device=self.device,
+                init_seed=derive_seed(self.seed, "eval_solver_init"),
+                step_seed=derive_seed(self.seed, "eval_solver_step"),
+                **self.solver_kwargs,
+            )
+            x_ref = x_true[self._ref_perm[:n_eval]]
+        else:
+            # Forward Chain: Data -> Prior
+            x_init = x_true[self._ref_perm[:n_eval]].to(
+                self.device, memory_format=self.memory_format
+            )
+            x_gen = sampler.generate(
+                model=model,
+                x_init=x_init,
+                batch_size=256,
+                step_seed=self._forward_sim_seed,
+                **self.solver_kwargs,
+            )
+            # Re-seed prior target generator for comparison
+            self._prior_gen.manual_seed(self._prior_seed)
+            x_ref = torch.randn(
+                x_gen.shape,
+                device=self.device,
+                dtype=x_gen.dtype,
+                generator=self._prior_gen,
+            ).contiguous(memory_format=self.memory_format)
+
+        gen_time = time.time() - gen_start
+        return x_gen, x_ref, gen_time
+
+    def _compute_metrics(
+        self, model: nn.Module, x_gen: torch.Tensor, x_ref: torch.Tensor, direction: str
+    ) -> Dict[str, float]:
+        """Maps data back to real space and computes distances/qualities."""
+        results = {}
+        ds = self.dl.dataset
+        if hasattr(ds, "inverse_transform"):
+            x_gen = ds.inverse_transform(x_gen)
+            x_ref = ds.inverse_transform(x_ref)
+
+        if self.is_image_data and direction == "b":
+            results.update(get_generative_quality_metrics(x_ref, x_gen))
+        else:
+            results["eval_MMD"] = float(get_mmd(x_ref, x_gen, device=self.device))
+
+            if self.ground_truth_v and direction == "b" and model.model_type != "ebm":
+                results["drift_MSE"] = get_drift_mse(model, self.ground_truth_v, x_gen)
+
+        return results
+
+    def _log_results(self, results: Dict[str, float]) -> None:
+        """Helper to pretty-print evaluation metrics."""
+        self.logger.info("Evaluation Metrics:")
+        for k, v in results.items():
+            if isinstance(v, float):
+                self.logger.info(f"{k:>20}: {v:.6f}")
+            else:
+                self.logger.info(f"{k:>20}: {v}")
+
+    def _visualize(
+        self,
+        model: nn.Module,
+        results: Dict[str, float],
+        x_true: torch.Tensor,
+        epoch: int,
+        cfg: Any,
+        trainer: Any,
+    ) -> None:
+        """Handles metric plotting and landscape visualization for EBM/ENOT."""
+        generate_and_plot(model, results, cfg, epoch)
+
+        if cfg.model.type not in ["ebm", "enot", "scone"] or not trainer:
+            return
+
+        num_points = min(2000, len(x_true))
+        real_idx = torch.randperm(len(x_true))[:num_points]
+        real_data = x_true[real_idx].to(self.device)
+
+        # -------------------------------------------------------------
+        # EBM Visualization
+        # -------------------------------------------------------------
+        if cfg.model.type == "ebm":
+            buffer_y = getattr(trainer, "replay_buffer_y", None)
+            if buffer_y is not None:
+                # Ensure we don't request more points than the buffer holds
+                fake_idx = torch.randperm(buffer_y.size(0))[:num_points]
+                buffer_data = buffer_y[fake_idx]
+
+                save_path = os.path.join(
+                    cfg.plots_path, f"energy_landscape_epoch_{epoch}.png"
+                )
+                visualize_energy_landscape(
+                    model, real_data, buffer_data, self.device, save_path
+                )
+
+        # -------------------------------------------------------------
+        # SCONE Visualization
+        # -------------------------------------------------------------
+        elif cfg.model.type == "scone":
+            buffer_y = getattr(trainer, "replay_buffer_y", None)
+
+            if buffer_y is not None:
+                fake_idx = torch.randperm(buffer_y.size(0))[:num_points]
+                buffer_y_data = buffer_y[fake_idx]
+
+                psi_model = (
+                    trainer.psi_ema.model
+                    if getattr(trainer, "psi_ema", None)
+                    else trainer.psi_base
+                )
+
+                save_path_psi = os.path.join(
+                    cfg.plots_path, f"scone_psi_landscape_epoch_{epoch}.png"
+                )
+                visualize_energy_landscape(
+                    psi_model, real_data, buffer_y_data, self.device, save_path_psi
+                )
+
+        # -------------------------------------------------------------
+        # ENOT Visualization
+        # -------------------------------------------------------------
+        elif cfg.model.type == "enot":
+            with torch.no_grad():
+                if getattr(trainer, "potential_ema", None):
+                    potential_model = trainer.potential_ema.model
+                else:
+                    potential_model = trainer.potential_base
+
+                x0 = torch.randn_like(real_data) * cfg.sigma
+                xN, _ = trainer.sampler.rollout_enot_training(
+                    model=model,
+                    x0=x0,
+                    epsilon=trainer.target_epsilon,
+                )
+
+                save_path = os.path.join(
+                    cfg.plots_path, f"enot_landscape_epoch_{epoch}.png"
+                )
+                visualize_enot_landscape(
+                    potential_model,
+                    model,
+                    real_data,
+                    xN,
+                    self.device,
+                    save_path,
+                )

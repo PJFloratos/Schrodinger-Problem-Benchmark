@@ -157,7 +157,7 @@ class SF2MTrainer(BaseTrainer):
         """Infinite generator for online Optimal Transport (Iteration 1)."""
         while True:
             x1 = self._next_data()
-            x0 = self._randn_like(x1, self.noise_gen)
+            x0 = self._randn_like(x1, self.noise_gen) * self.sigma
             yield self._couple(x0, x1)
 
     # ------------------------------------------------------------------
@@ -226,7 +226,9 @@ class SF2MTrainer(BaseTrainer):
             )
 
             # prior -> data
-            x0_f = self._randn_like(x1_real[: b_size - half], self.noise_gen)
+            x0_f = (
+                self._randn_like(x1_real[: b_size - half], self.noise_gen) * self.sigma
+            )
             x1_f = self.sampler_engine.generate(
                 model=self.sampler_b,
                 x_init=x0_f,
@@ -313,42 +315,27 @@ class SF2MTrainer(BaseTrainer):
             )
             loss = loss_v + loss_eps
 
-            if self.use_amp:
-                self.u_scaler.scale(loss_v).backward()
-                self.s_scaler.scale(loss_eps).backward()
-                self.u_scaler.unscale_(self.u_opt)
-                self.s_scaler.unscale_(self.s_opt)
-            else:
-                loss.backward()
-
-            self.log_inner_step(
-                model=self.u_model_base,
-                loss=loss.detach(),
-                optimizer=self.u_opt,
+            # Optimize Flow/Drift Network
+            self._optimize_step(
+                base_model=self.u_model_base,
+                opt=self.u_opt,
+                scaler=self.u_scaler,
+                loss=loss_v,
+                ema=self.ema_u,
+                log=True,
                 phase="sf2m",
-                ipf_iter=outer_idx,
+                epoch=outer_idx,
             )
 
-            if self.grad_clip:
-                torch.nn.utils.clip_grad_norm_(
-                    self.u_model.parameters(), self.grad_clip
-                )
-                torch.nn.utils.clip_grad_norm_(
-                    self.s_model.parameters(), self.grad_clip
-                )
-
-            if self.use_amp:
-                self.u_scaler.step(self.u_opt)
-                self.s_scaler.step(self.s_opt)
-                self.u_scaler.update()
-                self.s_scaler.update()
-            else:
-                self.u_opt.step()
-                self.s_opt.step()
-
-            if self.use_ema:
-                self.ema_u.update(self.u_model_base)
-                self.ema_s.update(self.s_model_base)
+            # Optimize Score/Noise Network
+            self._optimize_step(
+                base_model=self.s_model_base,
+                opt=self.s_opt,
+                scaler=self.s_scaler,
+                loss=loss_eps,
+                ema=self.ema_s,
+                log=False,
+            )
 
             tot_u += loss_v.detach()
             tot_s += loss_eps.detach()
@@ -408,11 +395,15 @@ class SF2MTrainer(BaseTrainer):
                     )
                     metrics.update(eval_callback(wrapper, direction="b"))
 
+                _log = self.logger.info
+            else:
+                _log = self.logger.debug
+
             self.log_phase_end("sf2m", n, metrics)
             self.track_parameter_drift(self.u_model_base, ipf_iter=n)
 
             qual_str = self._format_eval_str(metrics, _run_eval)
-            self.logger.info(f"Outer Loop {n} | Loss: {loss:.4f} | {qual_str}")
+            _log(f"Outer Loop {n} | Loss: {loss:.4f} | {qual_str}")
 
             _save_model = (
                 save_per is not None and save_path is not None and (n % save_per == 0)

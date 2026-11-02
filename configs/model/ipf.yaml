@@ -1,8 +1,8 @@
 name: "IPF"
 type: "ipf"
 
-sim_steps: 200
-num_iter: 5000
+sim_steps: 50
+num_iter: 3000
 refresh_every: 500
 num_cache_batches: 10
 save_interval: 500

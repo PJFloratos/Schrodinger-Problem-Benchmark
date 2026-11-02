@@ -6,70 +6,105 @@ from sklearn.datasets import make_moons, make_swiss_roll
 from sklearn.preprocessing import StandardScaler
 
 import math
-from typing import List, Tuple, Union, Iterable
+from typing import List, Tuple, Union, Iterable, Optional
 
 
 class Toy2DDataset(Dataset):
     """
-    A 2D toy dataset for validating the Generator Matching solver.
+    2D toy target distribution (pi_1) for Schrödinger-bridge / generative solvers.
+
+    Normalization: x_norm = (x_raw - mean) / scale, with ONE scalar `scale`
+    (isotropic, preserves geometry) chosen so E||x_norm||^2 / d = 1, i.e. the
+    data has the same second moment as N(0, I).
+    Pass `stats=(mean, scale)` from a train set to build a val set consistently.
     """
 
-    def __init__(self, n_samples: int = 10000, dataset_type: str = "moons") -> None:
+    def __init__(
+        self,
+        n_samples: int = 10000,
+        dataset_type: str = "moons",
+        seed: int = 0,
+        normalize: Optional[bool] = None,
+        stats: Optional[Tuple[np.ndarray, float]] = None,
+        gaussian_mu: Tuple[float, float] = (5.0, 5.0),
+        gaussian_var: float = 2.0,
+    ) -> None:
         super().__init__()
+
+        rng = np.random.default_rng(seed)
+        self.dataset_type = dataset_type
 
         self.n_samples = n_samples
 
         if dataset_type == "moons":
-            X, _ = make_moons(n_samples=n_samples, noise=0.05)
+            X, _ = make_moons(n_samples=n_samples, noise=0.05, random_state=seed)
 
         elif dataset_type == "swiss_roll":
-            # make_swiss_roll returns 3D data; slice out the height dimension to get a 2D spiral
-            X, _ = make_swiss_roll(n_samples=n_samples, noise=0.5)
-            X = X[:, [0, 2]]
+            X, _ = make_swiss_roll(n_samples=n_samples, noise=0.5, random_state=seed)
+            X = X[:, [0, 2]]  # drop the height axis -> 2D spiral
 
         elif dataset_type == "checkerboard":
-            # Generate uniform points and filter them into alternating disjoint squares
-            x1 = np.random.uniform(0, 4, n_samples * 3)
-            x2 = np.random.uniform(0, 4, n_samples * 3)
-            mask = (np.floor(x1) % 2 + np.floor(x2) % 2) % 2 == 0
-            X = np.vstack([x1[mask], x2[mask]]).T[:n_samples]
+            # Sample exactly n_samples: pick an allowed unit cell, then a uniform point in it
+            cells = np.array(
+                [(i, j) for i in range(4) for j in range(4) if (i + j) % 2 == 0]
+            )
+            idx = rng.integers(0, len(cells), size=n_samples)
+            X = cells[idx] + rng.uniform(0.0, 1.0, size=(n_samples, 2))
 
         elif dataset_type == "gaussian":
-            self.mu = torch.tensor([5.0, 5.0], dtype=torch.float32)
-            X = torch.randn(self.n_samples, 2) * math.sqrt(2) + self.mu
+            self.mu = np.asarray(gaussian_mu, dtype=np.float64)
+            self.var = float(gaussian_var)
+            X = self.mu + math.sqrt(self.var) * rng.standard_normal((n_samples, 2))
 
         elif dataset_type == "8gaussians":
-            # 8 distinct modes arranged in a circle - perfect for testing mode collapse
-            scale = 2.0
-            centers = [
-                (1, 0),
-                (-1, 0),
-                (0, 1),
-                (0, -1),
-                (1.0 / math.sqrt(2), 1.0 / math.sqrt(2)),
-                (1.0 / math.sqrt(2), -1.0 / math.sqrt(2)),
-                (-1.0 / math.sqrt(2), 1.0 / math.sqrt(2)),
-                (-1.0 / math.sqrt(2), -1.0 / math.sqrt(2)),
-            ]
-            centers = np.array([(scale * x, scale * y) for x, y in centers])
-
-            # Sample uniformly from the 8 centers and add small local noise
-            indices = np.random.choice(8, size=n_samples, replace=True)
-            noise = np.random.randn(n_samples, 2) * 0.15
-            X = centers[indices] + noise
+            r = 2.0
+            angles = np.arange(8) * (2 * np.pi / 8)
+            centers = r * np.stack([np.cos(angles), np.sin(angles)], axis=1)
+            idx = rng.integers(0, 8, size=n_samples)
+            X = centers[idx] + 0.15 * rng.standard_normal((n_samples, 2))
 
         else:
             raise ValueError(f"Unknown dataset type: {dataset_type}")
 
-        # if dataset_type in ["gaussian", "8gaussians"]:
-        if dataset_type in ["gaussian", "8gaussians"]:
-            # Skip scaling to preserve the exact analytical distribution
-            self.data = torch.tensor(X, dtype=torch.float32)
+        # Analytical Gaussian keeps its exact parameters unless explicitly asked otherwise
+        if normalize is None:
+            normalize = dataset_type != "gaussian"
+
+        if normalize:
+            if stats is None:
+                mean = X.mean(axis=0)
+                scale = float(
+                    np.sqrt(((X - mean) ** 2).sum(axis=1).mean() / X.shape[1])
+                )
+            else:
+                mean, scale = stats
         else:
-            # Standardize the data so it roughly aligns with the N(0, I) prior
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            self.data = torch.tensor(X_scaled, dtype=torch.float32)
+            mean, scale = np.zeros(2), 1.0
+
+        self.mean = np.asarray(mean, dtype=np.float64)
+        self.scale = float(scale)
+        self.data = torch.tensor((X - self.mean) / self.scale, dtype=torch.float32)
+
+    ############################################################
+    # Coordinate Mapping
+    ############################################################
+
+    @property
+    def stats(self):
+        return self.mean, self.scale
+
+    def inverse_transform(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.scale + torch.as_tensor(
+            self.mean, dtype=x.dtype, device=x.device
+        )
+
+    def eps_normalized(self, eps_raw: float) -> float:
+        """Reference noise level to use in normalized space for a given raw-space eps."""
+        return eps_raw / self.scale**2
+
+    ############################################################
+    # Dataset API
+    ############################################################
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.data[index]
@@ -78,4 +113,4 @@ class Toy2DDataset(Dataset):
         return self.n_samples
 
     def __str__(self) -> str:
-        return f"Toy2DDataset(samples={self.n_samples})"
+        return f"Toy2DDataset(type={self.dataset_type}, samples={len(self)}, scale={self.scale:.3f})"

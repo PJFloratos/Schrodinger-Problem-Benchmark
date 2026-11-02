@@ -152,6 +152,20 @@ class EulerSampler:
                 g_step=g_step,
                 **solver_kwargs,
             )
+
+        elif self.model_type == "enot":
+            out = self._generate_enot(
+                model=model,
+                shape=shape,
+                n_samples=n_samples,
+                device=device,
+                batch_size=batch_size,
+                verbose=verbose,
+                desc=desc,
+                g_init=g_init,
+                g_step=g_step,
+            )
+
         else:
             out = self._generate_standard(
                 model=model,
@@ -221,6 +235,9 @@ class EulerSampler:
                 if is_forward
                 else torch.randn(n, *shape, device=device, generator=g_init)
             )
+            if not is_forward and self.model_type in ["sde", "ipf", "imf", "sf2m"]:
+                x = x * sigma
+
             t = torch.empty(n, 1, device=device)
 
             for i in range(integration_steps):
@@ -278,6 +295,10 @@ class EulerSampler:
     ) -> List[torch.Tensor]:
         """Strategy: Single-step data-driven generation"""
         integration_steps = int(self.steps * self.t_end)
+
+        # Safely extract sigma (fallback to 1.0)
+        sigma = getattr(model, "sigma", 1.0)
+
         pbar = (
             tqdm(
                 total=math.ceil(n_samples / batch_size) * integration_steps,
@@ -295,7 +316,7 @@ class EulerSampler:
             x = (
                 x_init[start : start + n].clone()
                 if x_init is not None
-                else torch.randn(n, *shape, device=device, generator=g_init)
+                else torch.randn(n, *shape, device=device, generator=g_init) * sigma
             )
 
             x_1 = model.sample_x1(x)
@@ -325,33 +346,18 @@ class EulerSampler:
     ) -> List[torch.Tensor]:
         """Strategy: Unadjusted Langevin Algorithm (ULA)"""
         sigma = kwargs.get("sigma", 1.0)
+        gamma = kwargs.get("gamma", 1.0)
         eta_max = kwargs.get("eta_max_infer", None)
         eta_min = kwargs.get("eta_min_infer", None)
         spatial_clip = kwargs.get("spatial_clip", None)
         ebm_steps = kwargs.get("ebm_steps", 1000)
 
-        missing = [
-            k
-            for k, v in zip(
-                ["sigma", "eta_max_infer", "eta_min_infer", "spatial_clip"],
-                [sigma, eta_max, eta_min, spatial_clip],
-            )
-            if v is None
-        ]
-        if missing:
-            raise AttributeError(
-                f"EBM missing hyperparams: {missing}. Ensure they are passed via solver_kwargs."
-            )
+        # [OU Addition]: Calculate the analytical moments
+        alpha = math.exp(-gamma)
+        beta_sq = (sigma**2 / (2 * gamma)) * (1 - math.exp(-2 * gamma))
+        beta = math.sqrt(beta_sq)
 
-        target_horizon = 5.0 * (sigma**2)
-        if eta_max > eta_min:
-            required_steps = int(
-                target_horizon * math.log(eta_max / eta_min) / (eta_max - eta_min)
-            )
-        else:
-            required_steps = int(target_horizon / eta_max)
-
-        ebm_steps = max(ebm_steps, required_steps)
+        # ebm_steps = max(ebm_steps, required_steps)
         pbar = (
             tqdm(
                 total=math.ceil(n_samples / batch_size) * ebm_steps,
@@ -369,11 +375,15 @@ class EulerSampler:
             x = (
                 x_init[start : start + n].clone()
                 if x_init is not None
-                else torch.randn(n, *shape, device=device, generator=g_init)
+                else torch.randn(n, *shape, device=device, generator=g_init) * sigma
             )
             y = x + sigma * torch.randn(
                 x.shape, device=device, dtype=x.dtype, generator=g_init
             )
+            # # [OU Addition]: Initialize from the OU conditional prior instead of SBM
+            # y = alpha * x + beta * torch.randn(
+            #     x.shape, device=device, dtype=x.dtype, generator=g_init
+            # )
 
             for i in range(ebm_steps):
                 progress = i / max(1, ebm_steps - 1)
@@ -385,10 +395,9 @@ class EulerSampler:
                     psi = model(y)
                     grad_psi = torch.autograd.grad(psi.sum(), y)[0]
 
-                if spatial_clip > 0:
-                    grad_psi = grad_psi.clamp(-spatial_clip, spatial_clip)
-
                 drift = grad_psi + (x - y) / (sigma**2)
+                # # [OU Addition]: Drift anchors to (alpha * x) and scales by 1/beta^2
+                # drift = grad_psi + (alpha * x - y) / beta_sq
                 y = y.detach() + 0.5 * current_eta * drift
 
                 if not drop_noise:
@@ -452,7 +461,7 @@ class EulerSampler:
             if x_init is not None:
                 x = x_init[start : start + n].clone().to(device)
             else:
-                x = torch.randn(n, *shape, device=device, generator=g_init)
+                x = torch.randn(n, *shape, device=device, generator=g_init) * sigma
 
             # Initialize Y from the Reference Measure R_01
             y = x + sigma * torch.randn(
@@ -499,6 +508,86 @@ class EulerSampler:
 
             # Forward direction translates Prior to Data. So we return Y.
             out.append(y.detach())
+
+        if pbar:
+            pbar.close()
+
+        return out
+
+    # =========================================================================
+    # ENOT Specific Method
+    # =========================================================================
+    def rollout_enot_training(
+        self, model, x0, epsilon, n_last_steps_without_noise=0, gen=None
+    ):
+        B, N = x0.shape[0], self.steps
+        h = 1.0 / N
+        dev = x0.device
+        ts = torch.arange(N, device=dev, dtype=x0.dtype) * h
+
+        # one RNG call, uses the dedicated generator (for big images, draw per-step instead)
+        noise = torch.randn((N, *x0.shape), device=dev, dtype=x0.dtype, generator=gen)
+        if n_last_steps_without_noise:
+            noise[N - n_last_steps_without_noise :].zero_()
+        noise.mul_(math.sqrt(epsilon * h))
+
+        on_cuda = dev.type == "cuda"
+        amp_dtype = torch.float16 if on_cuda else torch.bfloat16
+
+        x, energy = x0, x0.new_zeros(B)
+        for i in range(N):
+            with torch.autocast(dev.type, dtype=amp_dtype, enabled=self.use_amp):
+                drift = model(x, ts[i].expand(B, 1))
+            drift = drift.float()
+            energy = energy + drift.flatten(1).pow(2).sum(1)
+            x = x + h * drift + noise[i]
+        return x, energy * h
+
+    def _generate_enot(
+        self,
+        model,
+        shape,
+        n_samples,
+        device,
+        batch_size,
+        verbose,
+        desc,
+        g_init,
+        g_step,
+    ) -> List[torch.Tensor]:
+        """Strategy: Strict ENOT forward physics rollout matching training."""
+        sigma = getattr(model, "sigma", 1.0)
+        epsilon = sigma**2
+
+        pbar = (
+            tqdm(
+                total=math.ceil(n_samples / batch_size) * self.steps,
+                ascii=True,
+                desc=desc,
+                leave=False,
+            )
+            if verbose
+            else None
+        )
+
+        out = []
+        for start in range(0, n_samples, batch_size):
+            n = min(batch_size, n_samples - start)
+            x0 = torch.randn(n, *shape, device=device, generator=g_init) * sigma
+
+            # Use the exact training physics with no noise at the end
+            x_gen, _ = self.rollout_enot_training(
+                model=model,
+                x0=x0,
+                epsilon=epsilon,
+                n_last_steps_without_noise=1,
+                gen=g_step,
+            )
+            out.append(x_gen)
+
+            # Update pbar by the number of integration steps executed per batch
+            if pbar:
+                pbar.update(self.steps)
 
         if pbar:
             pbar.close()

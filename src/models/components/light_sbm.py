@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+from torch.utils.data import Dataset
+
 import math
 
 
@@ -32,10 +34,13 @@ class LightSBM(nn.Module):
             torch.log(S_diagonal_init * torch.ones(n_potentials, self.dim))
         )
 
-    def init_r_by_samples(self, samples: torch.Tensor):
-        """Optionally initialize means using actual data samples."""
-        assert samples.shape[0] == self.r.shape[0]
-        self.r.data = samples.clone().to(self.r.device)
+    def init_from_dataset(self, dataset: Dataset):
+        # Extract exactly n_potentials samples from the dataset
+        samples = [dataset[i] for i in range(self.n_potentials)]
+        init_samples = torch.stack(samples).to(self.r.device)
+
+        # Safely overwrite the parameter data
+        self.r.data.copy_(init_samples)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """

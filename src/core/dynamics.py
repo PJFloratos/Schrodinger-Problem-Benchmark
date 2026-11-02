@@ -162,6 +162,11 @@ class ConditionalVectorField:
             # Prior is standard Gaussian
             x_0 = cls._randn_like(z_batch, gen, memory_format)
 
+            # cost_matrix = torch.cdist(x_0.view(B, -1), z_batch.view(B, -1), p=2).pow(2)
+            # row_ind, col_ind = cls.exact_ot_assignment_cpu(cost_matrix)
+            # x_0 = x_0[row_ind]
+            # z_batch = z_batch[col_ind]
+
             x_t = t_expand * z_batch + (1.0 - t_expand) * x_0
             target_u = z_batch - x_0
 
@@ -219,7 +224,7 @@ class ConditionalVectorField:
 
         elif model_type == "lightsbm":
             # 1. Sample Prior
-            x_0 = cls._randn_like(z_batch, gen, memory_format)
+            x_0 = cls._randn_like(z_batch, gen, memory_format) * sigma
 
             # 2. Minibatch OT assignment
             cost_matrix = torch.cdist(x_0.view(B, -1), z_batch.view(B, -1), p=2).pow(2)
@@ -271,6 +276,7 @@ class ConditionalVectorField:
         elif model_type == "imf":
             # The mathematical weight for the Brownian bridge simplifies perfectly
             # to the exact same equation for BOTH directions when mapped to t_net!
+            t_net = t_net.unsqueeze(-1)
             weight = 1.0 / (1.0 + (sigma**2 * t_net) / (1.0 - t_net))
             return torch.mean(weight * raw_loss)
 

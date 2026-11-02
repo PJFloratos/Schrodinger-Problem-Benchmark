@@ -1,11 +1,15 @@
 name: "SCONE"
 type: "scone"
 
-ula_steps: 30
-ula_step_size: 5e-3
-spatial_clip: 50.0
-l2_reg: 1e-4
-cold_start: 0.02
+ula_steps: 40
+ula_step_size: 1e-3
+l2_reg: 1e-3
+cold_start: 0.05
+spatial_clip: 0.0
 eta_min_infer: 1e-5
 ebm_steps: 1000
+buffer_size: 10000
 save_interval: 500
+
+# Spatial clip was not useful in the toy datasets
+# In the geometry of the different modes is not there increase the step size
