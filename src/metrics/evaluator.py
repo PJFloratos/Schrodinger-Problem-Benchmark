@@ -107,45 +107,39 @@ class Evaluator:
     def evaluate(
         self,
         model: nn.Module,
-        backward_model: nn.Module = None,
         num_samples: int = None,  # To overwrite the global one
         log: bool = False,
         use_amp: bool = True,
         direction: str = "b",
         epoch: Optional[int] = None,
         cfg: Optional[Any] = None,
-        trainer: Optional[Any] = None,
+        plot_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, float]:
 
         with torch.random.fork_rng(devices=self._rng_devices):
             return self._evaluate(
                 model,
-                backward_model,
                 num_samples,
                 log,
                 use_amp,
                 direction,
                 epoch,
                 cfg,
-                trainer,
+                plot_kwargs,
             )
 
     def _evaluate(
         self,
         model: nn.Module,
-        backward_model: Optional[nn.Module],
         num_samples: Optional[int],
         log: bool,
         use_amp: bool,
         direction: str,
         epoch: Optional[int] = None,
         cfg: Optional[Any] = None,
-        trainer: Optional[Any] = None,
+        plot_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, float]:
         model.eval()
-        if backward_model:
-            backward_model.eval()
-
         # 1. Fetch & prep data setup
         # Delegate dataset fetching to _get_test_data unconditionally to ensure
         # it is cached in self._x_test and reused efficiently across evaluations.
@@ -182,7 +176,7 @@ class Evaluator:
             self._log_results(results)
 
         if epoch and cfg:
-            self._visualize(model, results, x_true, epoch, cfg, trainer)
+            self._visualize(model, results, x_true, epoch, cfg, plot_kwargs)
 
         return results
 
@@ -215,7 +209,7 @@ class Evaluator:
 
         # EBM loss requires MCMC and spatial autograd. The EBMTrainer handles this.
         # We bypass it here to prevent inference_mode crashes.
-        if model.model_type in ["ebm", "scone", "enot_drift"]:
+        if model.model_type in ["ebm", "scone", "enot_drift", "fbsde"]:
             return None
 
         gen = self._noise_gen
@@ -232,7 +226,7 @@ class Evaluator:
         # The true IPF loss requires running a full SDE simulation of the opposite network
         # to generate `drift_next`. To avoid massive computational overhead in the Evaluator,
         # we proxy IPF's validation health against the standard independent SDE targets.
-        eval_model_type = "sde" if model_type == "ipf" else model_type
+        eval_model_type = "sde" if model_type in ["ipf", "fbsde"] else model_type
 
         # Define amp_dtype locally based on the device
         amp_dtype = torch.float16 if self.device.type == "cuda" else torch.bfloat16
@@ -323,6 +317,8 @@ class Evaluator:
         """Handles the forward or backward generation chains."""
         gen_start = time.time()
 
+        kwargs = self.solver_kwargs.copy()
+
         if direction == "b":
             # Backward Chain: Prior -> Data
             x_gen = sampler.generate(
@@ -332,7 +328,7 @@ class Evaluator:
                 device=self.device,
                 init_seed=derive_seed(self.seed, "eval_solver_init"),
                 step_seed=derive_seed(self.seed, "eval_solver_step"),
-                **self.solver_kwargs,
+                **kwargs,
             )
             x_ref = x_true[self._ref_perm[:n_eval]]
         else:
@@ -345,7 +341,7 @@ class Evaluator:
                 x_init=x_init,
                 batch_size=256,
                 step_seed=self._forward_sim_seed,
-                **self.solver_kwargs,
+                **kwargs,
             )
             # Re-seed prior target generator for comparison
             self._prior_gen.manual_seed(self._prior_seed)
@@ -390,17 +386,18 @@ class Evaluator:
 
     def _visualize(
         self,
-        model: nn.Module,
+        model: nn.Module,  # The wrapper
         results: Dict[str, float],
         x_true: torch.Tensor,
         epoch: int,
         cfg: Any,
-        trainer: Any,
+        plot_kwargs: Optional[Dict[str, Any]],
     ) -> None:
         """Handles metric plotting and landscape visualization for EBM/ENOT."""
+        plot_kwargs = plot_kwargs or {}
         generate_and_plot(model, results, cfg, epoch)
 
-        if cfg.model.type not in ["ebm", "enot", "scone"] or not trainer:
+        if cfg.model.type not in ["ebm", "enot", "scone"]:
             return
 
         num_points = min(2000, len(x_true))
@@ -411,7 +408,7 @@ class Evaluator:
         # EBM Visualization
         # -------------------------------------------------------------
         if cfg.model.type == "ebm":
-            buffer_y = getattr(trainer, "replay_buffer_y", None)
+            buffer_y = plot_kwargs.get("buffer_y")
             if buffer_y is not None:
                 # Ensure we don't request more points than the buffer holds
                 fake_idx = torch.randperm(buffer_y.size(0))[:num_points]
@@ -428,23 +425,17 @@ class Evaluator:
         # SCONE Visualization
         # -------------------------------------------------------------
         elif cfg.model.type == "scone":
-            buffer_y = getattr(trainer, "replay_buffer_y", None)
+            buffer_y = plot_kwargs.get("buffer_y")
 
             if buffer_y is not None:
                 fake_idx = torch.randperm(buffer_y.size(0))[:num_points]
                 buffer_y_data = buffer_y[fake_idx]
 
-                psi_model = (
-                    trainer.psi_ema.model
-                    if getattr(trainer, "psi_ema", None)
-                    else trainer.psi_base
-                )
-
                 save_path_psi = os.path.join(
                     cfg.plots_path, f"scone_psi_landscape_epoch_{epoch}.png"
                 )
                 visualize_energy_landscape(
-                    psi_model, real_data, buffer_y_data, self.device, save_path_psi
+                    model.psi, real_data, buffer_y_data, self.device, save_path_psi
                 )
 
         # -------------------------------------------------------------
@@ -452,24 +443,25 @@ class Evaluator:
         # -------------------------------------------------------------
         elif cfg.model.type == "enot":
             with torch.no_grad():
-                if getattr(trainer, "potential_ema", None):
-                    potential_model = trainer.potential_ema.model
-                else:
-                    potential_model = trainer.potential_base
-
                 x0 = torch.randn_like(real_data) * cfg.sigma
-                xN, _ = trainer.sampler.rollout_enot_training(
+                epsilon = plot_kwargs.get("target_epsilon", cfg.sigma**2)
+
+                # Instantiate a clean, local solver specifically for the ENOT plot rollout
+                sampler = EulerSampler(
+                    model_type="enot", steps=self.sde_steps, use_amp=True
+                )
+                xN, _ = sampler.rollout_enot_training(
                     model=model,
                     x0=x0,
-                    epsilon=trainer.target_epsilon,
+                    epsilon=epsilon,
                 )
 
                 save_path = os.path.join(
                     cfg.plots_path, f"enot_landscape_epoch_{epoch}.png"
                 )
                 visualize_enot_landscape(
-                    potential_model,
-                    model,
+                    model.potential,
+                    model.drift,
                     real_data,
                     xN,
                     self.device,

@@ -1,4 +1,5 @@
 from src.training.base_trainer import BaseTrainer
+from src.models.components import ENOTWrapper
 from src.core.solver import EulerSampler
 from src.utils.seed import derive_seed
 from src.utils.log import text_logger
@@ -242,10 +243,12 @@ class ENOTTrainer(BaseTrainer):
                 and (epoch % eval_per == 0)
             )
             if _run_eval:
+                wrapper = ENOTWrapper(
+                    drift_model=d_eval, potential_model=p_eval, sigma=self.sigma
+                )
                 with self._isolated_global_rng(derive_seed(self.seed, "enot_eval")):
-                    metrics.update(
-                        eval_callback(drift_eval, direction="b", epoch=epoch)
-                    )
+                    metrics.update(eval_callback(wrapper, direction="b", epoch=epoch))
+
                 _log = self.logger.info
             else:
                 _log = self.logger.debug
@@ -270,4 +273,10 @@ class ENOTTrainer(BaseTrainer):
             save_model(drift_eval, f"{save_path}/ENOT_G_final.pth")
             save_model(potential_eval, f"{save_path}/ENOT_D_final.pth")
 
-        return drift_eval, metrics
+        final_wrapper = ENOTWrapper(
+            drift_model=self.drift_model_base,
+            potential_model=self.potential_model_base,
+            sigma=self.sigma,
+        )
+
+        return final_wrapper, metrics

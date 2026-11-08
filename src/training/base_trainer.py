@@ -210,7 +210,6 @@ class BaseTrainer(ABC):
         items = [it[0] if isinstance(it, (list, tuple)) else it for it in items]
         return torch.stack(items).to(self.device, memory_format=self.memory_format)
 
-    @torch.no_grad()
     def _probe_loss(
         self, model: nn.Module, model_type: str, phase: str, *probe_tensors
     ) -> float:
@@ -243,27 +242,39 @@ class BaseTrainer(ABC):
             + eps
         )
 
-        # Data Unpacking (Differs based on cache structure)
-        if model_type == "imf":
-            # IMF unpacks Endpoints (X0, X1) and dynamically builds the bridge
-            x0, x1 = self._probe_tensors[0][idx], self._probe_tensors[1][idx]
-            x_t, target, t_net = ConditionalVectorField.get_interpolant_and_target(
-                model_type="imf",
-                z_batch=x1,
-                t=t,
-                gen=gen,
-                x0_batch=x0,
-                sigma=getattr(self, "sigma", 1.0),
-                direction=phase,
-                memory_format=self.memory_format,
-            )
-        elif model_type == "ipf":
-            # IPF unpacks the pre-computed Trajectory (X, T, U) directly
-            x_t = self._probe_tensors[0][idx]
-            t_net = self._probe_tensors[1][idx]
-            target = self._probe_tensors[2][idx]
-        else:
-            raise ValueError(f"Probe loss not implemented for model type: {model_type}")
+        # Dynamically enable gradients ONLY for SB-FBSDE (needed for Hutchinson trace)
+        with torch.set_grad_enabled(model_type == "fbsde"):
+
+            # Data Unpacking (Differs based on cache structure)
+            if model_type == "imf":
+                # IMF unpacks Endpoints (X0, X1) and dynamically builds the bridge
+                x0, x1 = self._probe_tensors[0][idx], self._probe_tensors[1][idx]
+                x_t, target, t_net = ConditionalVectorField.get_interpolant_and_target(
+                    model_type="imf",
+                    z_batch=x1,
+                    t=t,
+                    gen=gen,
+                    x0_batch=x0,
+                    sigma=getattr(self, "sigma", 1.0),
+                    direction=phase,
+                    memory_format=self.memory_format,
+                )
+            elif model_type == "ipf":
+                # IPF unpacks the pre-computed Trajectory (X, T, U) directly
+                x_t = self._probe_tensors[0][idx]
+                t_net = self._probe_tensors[1][idx]
+                target = self._probe_tensors[2][idx]
+            elif model_type == "fbsde":
+                # SB-FBSDE unpacks the pre-computed Trajectory (X, T, Z_impt)
+                # We clone x_t so the required gradient graph is fully isolated to this probe
+                x_t = self._probe_tensors[0][idx].clone()
+                t_net = self._probe_tensors[1][idx]
+                target = self._probe_tensors[2][idx]  # Z_impt of the opposite network
+                x_t.requires_grad_(True)
+            else:
+                raise ValueError(
+                    f"Probe loss not implemented for model type: {model_type}"
+                )
 
         # Loss Computation (Shared)
         if hasattr(torch.compiler, "cudagraph_mark_step_begin"):
@@ -272,16 +283,27 @@ class BaseTrainer(ABC):
         with torch.autocast(
             device_type=self.device.type, dtype=self.amp_dtype, enabled=self.use_amp
         ):
-            # pred = model(x_t, t_net)
-            pred = model(x_t, t)
-            loss = ConditionalVectorField.compute_loss(
-                model_type,
-                pred,
-                target,
-                t_net,
-                sigma=getattr(self, "sigma", 1.0),
-                h=getattr(self, "h", None),
-            )
+            if model_type == "sbfbsde":
+                # SB-FBSDE custom divergence loss
+                z_opt = model(x_t, t_net)
+                div_gz = ConditionalVectorField.compute_div_gz(
+                    z_opt, x_t, getattr(self, "sigma", 1.0), gen=gen
+                )
+                loss = ConditionalVectorField.compute_sbfbsde_loss(
+                    z_opt, target, div_gz, getattr(self, "h", 1.0)
+                )
+            else:
+                # Standard matching loss for IPF, IMF, etc.
+                # pred = model(x_t, t_net)
+                pred = model(x_t, t)
+                loss = ConditionalVectorField.compute_loss(
+                    model_type,
+                    pred,
+                    target,
+                    t_net,
+                    sigma=getattr(self, "sigma", 1.0),
+                    h=getattr(self, "h", None),
+                )
 
         model.train(was_training)
         return loss.item()

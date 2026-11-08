@@ -70,7 +70,7 @@ def _build_experiment_signature(cfg: DictConfig) -> str:
     if m_type in ["flow_m", "minibatch"]:
         parts.remove(f"{cfg.sigma}sig")
         parts.append(f"{cfg.model.get('sim_steps', 0)}ss")
-    elif m_type in ["ipf", "imf", "sf2m"]:
+    elif m_type in ["ipf", "imf", "sf2m", "fbsde"]:
         parts.append(f"{cfg.model.get('num_iter', 0)}it")
         parts.append(f"{cfg.model.get('sim_steps', 0)}ss")
     elif m_type == "sf2m":
@@ -106,6 +106,11 @@ def _generate(generative_model, cfg, n_samples: int) -> torch.Tensor:
             "eta_min_infer": cfg.model.get("eta_min_infer", 1e-4),
             "spatial_clip": cfg.model.get("spatial_clip", 10.0) / (cfg.sigma**2),
             "ebm_steps": cfg.model.get("ebm_steps", 1000),
+        }
+    elif cfg.model.type == "fbsde":
+        solver_kwargs = {
+            "r_snr": cfg.model.get("r_snr", 0.16),
+            "n_corrector": cfg.model.get("n_corrector", 1),
         }
 
     # Derive the device dynamically from the model

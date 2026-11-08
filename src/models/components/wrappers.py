@@ -65,3 +65,47 @@ class SCONEWrapper(torch.nn.Module):
         self.psi = psi_model
         self.sigma = sigma
         self.reference = reference
+
+
+class ENOTWrapper(nn.Module):
+    """Packs the drift and potential models together."""
+
+    def __init__(
+        self, drift_model: nn.Module, potential_model: nn.Module, sigma: float
+    ):
+        super().__init__()
+        self.drift = drift_model
+        self.potential = potential_model
+        self.sigma = sigma
+        self.model_type = "enot"
+
+    def forward(self, x, t):
+        # Evaluator and standard solvers only need the drift
+        return self.drift(x, t)
+
+
+class IterWrapper(nn.Module):
+    """
+    Adapter packing dual forward/backward policies into a single entity.
+    Compatible with IPF, IMF, and SB-FBSDE pipelines.
+    """
+
+    def __init__(
+        self,
+        f_model: nn.Module,
+        b_model: nn.Module,
+        sigma: float,
+        direction: str = "b",
+        model_type: str = "fbsde",
+    ):
+        super().__init__()
+        self.f = f_model
+        self.b = b_model
+        self.sigma = sigma
+        self.direction = direction
+        self.model_type = model_type
+
+    def forward(self, x, t):
+        # The Evaluator's generic validation loss simply calls `model(x, t)`.
+        # We proxy to the active policy based on the evaluation direction.
+        return self.b(x, t) if self.direction == "b" else self.f(x, t)

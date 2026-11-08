@@ -5,3 +5,4 @@ from src.training.sf2m_trainer import SF2MTrainer
 from src.training.ebm_trainer import EBMTrainer
 from src.training.scone_trainer import SCONETrainer
 from src.training.enot_trainer import ENOTTrainer
+from src.training.fbsde_trainer import FBSDETrainer

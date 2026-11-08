@@ -1,4 +1,5 @@
 from src.training.base_trainer import BaseTrainer
+from src.models.components import IterWrapper
 from src.core.dynamics import ConditionalVectorField
 from src.core.solver import EulerSampler
 from src.models.components import EMAHelper
@@ -62,6 +63,8 @@ class IPFTrainer(BaseTrainer):
             use_amp=use_amp,
         )
 
+        self.model_type = "ipf"
+
         self.f_opt = forward_opt
         self.b_opt = backward_opt
         self.sde_steps = sde_steps
@@ -71,7 +74,6 @@ class IPFTrainer(BaseTrainer):
         self.grad_clip = grad_clip
         self.lr_decay = lr_decay
         self.lr_final_ratio = lr_final_ratio
-        self.criterion = nn.MSELoss()
         self.use_ema = use_ema
 
         # DataLoader shuffling (must be a CPU generator).
@@ -327,6 +329,8 @@ class IPFTrainer(BaseTrainer):
         save_path: Union[str, None] = None,
         eval_per: Optional[int] = None,
         eval_callback: Optional[callable] = None,
+        use_wrapper: bool = False,
+        eval_forward: bool = False,
     ):
         # Models to evaluate/save: the EMA copies if enabled, else the live base models
         f_eval = self.f_ema.model if self.use_ema else self.f_model_base
@@ -370,9 +374,22 @@ class IPFTrainer(BaseTrainer):
                 and (n % eval_per == 0)
             )
             if _run_eval:
-                with self._isolated_global_rng(derive_seed(self.seed, "ipf_eval")):
+                if use_wrapper:
+                    _model_b = IterWrapper(
+                        f_model=f_eval,
+                        b_model=b_eval,
+                        sigma=self.sigma,
+                        direction="b",
+                        model_type=self.model_type,
+                    )
+                else:
+                    _model_b = b_eval
+
+                with self._isolated_global_rng(
+                    derive_seed(self.seed, f"{self.model_type}_eval")
+                ):
                     # Trigger the evaluator purely as a callback
-                    b_metrics.update(eval_callback(b_eval, direction="b"))
+                    b_metrics.update(eval_callback(_model_b, direction="b", epoch=n))
 
                 _log = self.logger.info
             else:
@@ -407,9 +424,22 @@ class IPFTrainer(BaseTrainer):
                 "phase_time_sec": f_time,
                 "train_nfes": train_nfes,
             }
-            if _run_eval:
-                with self._isolated_global_rng(derive_seed(self.seed, "ipf_eval")):
-                    f_metrics.update(eval_callback(f_eval, direction="f"))
+            if _run_eval and eval_forward:
+                if use_wrapper:
+                    _model_f = IterWrapper(
+                        f_model=f_eval,
+                        b_model=b_eval,
+                        sigma=self.sigma,
+                        direction="f",
+                        model_type=self.model_type,
+                    )
+                else:
+                    _model_f = f_eval
+
+                with self._isolated_global_rng(
+                    derive_seed(self.seed, f"{self.model_type}_eval")
+                ):
+                    f_metrics.update(eval_callback(_model_f, direction="f"))
 
             self.log_phase_end("forward", n, f_metrics)
 
@@ -451,4 +481,15 @@ class IPFTrainer(BaseTrainer):
                 f"{save_path}/{self.f_model_base.__class__.__name__}_forward_final.pth",
             )
 
-        return self.b_model_base, {"f_metrics": f_metrics, "b_metrics": b_metrics}
+        if use_wrapper:
+            _model = IterWrapper(
+                f_model=self.f_model_base,
+                b_model=self.b_model_base,
+                sigma=self.sigma,
+                direction="b",
+                model_type=self.model_type,
+            )
+        else:
+            _model = self.b_model_base
+
+        return _model, {"f_metrics": f_metrics, "b_metrics": b_metrics}

@@ -1,0 +1,12 @@
+name: "FBSDE"
+type: "fbsde"
+
+sim_steps: 100
+num_iter: 1000
+refresh_every: 400
+num_cache_batches: 8
+
+save_interval: 500
+
+r_snr: 0.05
+n_corrector: 0

@@ -1,6 +1,6 @@
 defaults:
   - dataset: toy2d
-  - model: enot
+  - model: fbsde
   - _self_
 
 # --- Reproducibility & Hardware ---
@@ -9,24 +9,24 @@ eval_seed: 9999
 device: "cpu"
 
 use_amp: false
-use_ema: True
+use_ema: false
 use_compile: false
 
 # --- Global Physics & Training Defaults ---
 reference: "brownian"   # in ['brownian', 'ou']
 sigma: 0.1
 gamma: 1.0
-epochs: 100
+epochs: 50
 batch_size: 512
 learning_rate: 1e-3
 weight_decay: 1e-4
 grad_clip: 1.0
 
 # --- Global Evaluation Defaults ---
-eval_per: 10
+eval_per: 1
 plot_epoch: True
 save_interval: 500
-eval_sim_steps: 50
+eval_sim_steps: 100
 track_gen_samples: 512
 eval_gen_samples: 4000
 
@@ -47,25 +47,31 @@ logs_path: "${base_log_path}/${dataset.name}/${model.name}"
 ################################################################################
 #
 # Next:
-#     - Implement FBSDE model
 #     - Two 'generating samples' in evaluation bug
-#     - Add the action matching model
+#     - Decouple evaluation from training and create an eval script (pipeline)
 #     - Update for OU reference & start at an arbitrary p_prior
+#     - Add the action matching model
 #     - Examine if the evaluation/generation can be faster
 #     - Read the benchmark paper (implement and extend it)
 #
 #
 # Experiments Structure:
 #     - experiments/
-#     - experiments/<dataset>
-#     - experiments/<dataset>/<model_type>
-#     - experiments/<dataset>/<model_type>/<exp_name>
-#     - experiments/<dataset>/<model_type>/<exp_name>/settings.log
-#     - experiments/<dataset>/<model_type>/<exp_name>/train.log
-#     - experiments/<dataset>/<model_type>/<exp_name>/eval.log
-#     - experiments/<dataset>/<model_type>/<exp_name>/model.pth
-#     - experiments/<dataset>/<model_type>/<exp_name>/plots/
-#     - experiments/<dataset>/<model_type>/<exp_name>/plots/<plot_name>.png
+#     - experiments/<dataset>/
+#     - experiments/<dataset>/<model_type>/
+#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/
+#
+#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/logs/
+#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/logs/settings.log
+#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/logs/train.log
+#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/logs/eval.log
+#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/logs/metrics.jsonl
+#
+#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/checkpoints/
+#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/checkpoints/<name>.pth
+#
+#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/plots/
+#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/plots/<plot_name>.png
 #
 #
 # Experiments Strategy:

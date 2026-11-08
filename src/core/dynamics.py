@@ -3,7 +3,7 @@ import torch
 from scipy.optimize import linear_sum_assignment
 
 import math
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Union
 
 
 class ConditionalVectorField:
@@ -58,7 +58,7 @@ class ConditionalVectorField:
         return row_ind, col_ind
 
     # =========================================================================
-    # IPF / DSB Specific Math
+    # DSB Specific Math
     # =========================================================================
 
     @staticmethod
@@ -87,6 +87,62 @@ class ConditionalVectorField:
         loss_eps = torch.mean((eps_pred.float() - eps_target) ** 2)
 
         return loss_v, loss_eps
+
+    # =========================================================================
+    # SB-FBSDE Specific Math
+    # =========================================================================
+
+    @staticmethod
+    def compute_div_gz(
+        z: torch.Tensor,
+        x: torch.Tensor,
+        g_t: Union[float, torch.Tensor],
+        gen: Optional[torch.Generator] = None,
+        exact: bool = True,
+    ) -> torch.Tensor:
+        """
+        Computes the Hutchinson trace estimator for the divergence of g(t)Z(t, x).
+        Requires x.requires_grad = True before passing through the network.
+        """
+        if exact:
+            div = torch.zeros(z.shape[0], device=z.device, dtype=z.dtype)
+            for i in range(z.shape[1]):
+                # Differentiate the i-th output dimension with respect to all inputs
+                grad_z = torch.autograd.grad(
+                    outputs=z[:, i].sum(),
+                    inputs=x,
+                    create_graph=True,
+                    retain_graph=True,
+                )[0]
+                # Accumulate the diagonal terms (d z_i / d x_i)
+                div += grad_z[:, i]
+
+            return div * g_t
+
+        # Ensure 'e' is instantiated in the exact same precision as 'x' (FP32)
+        e = (
+            torch.randint(0, 2, x.shape, device=x.device, generator=gen).to(x.dtype)
+            * 2.0
+            - 1.0
+        )
+
+        gz = z * g_t
+
+        e_dzdx = torch.autograd.grad(
+            outputs=gz, inputs=x, grad_outputs=e, create_graph=True, retain_graph=True
+        )[0]
+
+        div_gz = (e_dzdx * e).view(x.shape[0], -1).sum(dim=1)
+
+        return div_gz
+
+    @staticmethod
+    def compute_sbfbsde_loss(z_opt, z_impt, div_gz, h, w=None):
+        inner = (z_opt * (0.5 * z_opt + z_impt)).view(z_opt.shape[0], -1).sum(1)
+        per = (inner + div_gz) * h
+        if w is not None:
+            per = per * w.view(-1)
+        return per.mean()
 
     # =========================================================================
     # SCONE Specific Math

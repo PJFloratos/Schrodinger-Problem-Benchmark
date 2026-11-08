@@ -166,6 +166,19 @@ class EulerSampler:
                 g_step=g_step,
             )
 
+        elif self.model_type == "fbsde":
+            out = self._generate_fbsde(
+                model=model,
+                shape=shape,
+                n_samples=n_samples,
+                device=device,
+                batch_size=batch_size,
+                desc=desc,
+                g_init=g_init,
+                g_step=g_step,
+                **solver_kwargs,
+            )
+
         else:
             out = self._generate_standard(
                 model=model,
@@ -511,6 +524,62 @@ class EulerSampler:
 
         if pbar:
             pbar.close()
+
+        return out
+
+    def _generate_fbsde(
+        self,
+        model,
+        shape,
+        n_samples,
+        device,
+        batch_size,
+        desc,
+        g_init,
+        g_step,
+        r_snr=0.05,
+        n_corrector=0,
+        t0=1e-4,
+    ) -> List[torch.Tensor]:
+        """Strategy: Predictor-Corrector sampling for SB-FBSDE."""
+        sigma = getattr(model, "sigma", 1.0)
+
+        u = torch.linspace(0, 1, self.steps, device=device)
+        ts = torch.flip(t0 + (1.0 - t0) * u**2, dims=[0])  # descending
+        steps_down = ts[:-1] - ts[1:]
+
+        out = []
+        for start in range(0, n_samples, batch_size):
+            n = min(batch_size, n_samples - start)
+            x = torch.randn(n, *shape, device=device, generator=g_init) * sigma
+
+            for idx, t_val in enumerate(ts):  # all `steps` points, incl. t0
+                t_tensor = torch.full((n, 1), t_val.item(), device=device)
+                z_b = model.b(x, t_tensor)
+                if idx == len(ts) - 1:
+                    x = x + sigma * z_b * t0  # t0 -> 0, noise-free
+                    break
+                hk = steps_down[idx].item()
+                noise = torch.randn(
+                    x.shape, device=device, dtype=x.dtype, generator=g_step
+                )
+                x = x + sigma * z_b * hk + sigma * math.sqrt(hk) * noise
+
+                # CORRECTOR STEP (only on intermediate steps)
+                next_t = torch.full((n, 1), ts[idx + 1].item(), device=device)
+                for _ in range(n_corrector):
+                    z = model.f(x, next_t) + model.b(x, next_t)
+                    noise_corr = torch.randn(
+                        x.shape, device=device, dtype=x.dtype, generator=g_step
+                    )
+                    z_norm = z.reshape(n, -1).norm(dim=1, keepdim=True)
+                    noise_norm = noise_corr.reshape(n, -1).norm(dim=1, keepdim=True)
+                    eps = 2.0 * ((r_snr * noise_norm) / (z_norm + 1e-8)) ** 2
+                    eps = eps.view(n, *([1] * (x.ndim - 1)))
+
+                    x = x + sigma * eps * z + sigma * torch.sqrt(2.0 * eps) * noise_corr
+
+            out.append(x)
 
         return out
 

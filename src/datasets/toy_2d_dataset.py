@@ -26,8 +26,10 @@ class Toy2DDataset(Dataset):
         seed: int = 0,
         normalize: Optional[bool] = None,
         stats: Optional[Tuple[np.ndarray, float]] = None,
-        gaussian_mu: Tuple[float, float] = (5.0, 5.0),
-        gaussian_var: float = 2.0,
+        # gaussian_mu: Tuple[float, float] = (5.0, 5.0),
+        # gaussian_var: float = 2.0,
+        gaussian_mu: Tuple[float, float] = (0.0, 0.0),
+        gaussian_var: float = 0.0025,
     ) -> None:
         super().__init__()
 

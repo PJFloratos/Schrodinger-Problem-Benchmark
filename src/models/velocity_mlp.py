@@ -16,25 +16,31 @@ class VelocityMLP(nn.Module):
         self.time_embed = SinusoidalTimeEmbedding(dim=time_dim)
         self.time_encoder = nn.Sequential(
             nn.Linear(time_dim, hidden),
-            nn.LeakyReLU(),
+            # nn.LeakyReLU(),
+            nn.SiLU(),
             nn.Linear(hidden, time_dim * 2),
-            nn.LeakyReLU(),
+            # nn.LeakyReLU(),
+            nn.SiLU(),
         )
 
         # 2. Spatial Encoder (Matches DSB encoder_layers=[16], t_enc_dim=32)
         self.x_encoder = nn.Sequential(
             nn.Linear(d, hidden),
-            nn.LeakyReLU(),
+            # nn.LeakyReLU(),
+            nn.SiLU(),
             nn.Linear(hidden, time_dim * 2),
-            nn.LeakyReLU(),
+            # nn.LeakyReLU(),
+            nn.SiLU(),
         )
 
         # 3. Decoder Network (Matches DSB decoder_layers=[128, 128])
         self.net = nn.Sequential(
             nn.Linear(time_dim * 4, hidden),
-            nn.LeakyReLU(),
+            # nn.LeakyReLU(),
+            nn.SiLU(),
             nn.Linear(hidden, hidden),
-            nn.LeakyReLU(),
+            # nn.LeakyReLU(),
+            nn.SiLU(),
             nn.Linear(hidden, d),
         )
 

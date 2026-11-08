@@ -8,6 +8,7 @@ from src.training import (
     EBMTrainer,
     SCONETrainer,
     ENOTTrainer,
+    FBSDETrainer,
 )
 from src.metrics import Evaluator
 from src.metrics.plot import (
@@ -83,6 +84,13 @@ class Pipeline:
                 "spatial_clip": self.cfg.model.get("spatial_clip", 10.0),
                 "ebm_steps": self.cfg.model.get("ebm_steps", 1000),
             }
+        elif self.cfg.model.type == "fbsde":
+            solver_kwargs = {
+                "r_snr": self.cfg.model.get("r_snr", 0.16),
+                "n_corrector": self.cfg.model.get("n_corrector", 1),
+            }
+
+        self.plot_kwargs = {}
 
         # Initialize the evaluator internally
         self.evaluator = Evaluator(
@@ -113,6 +121,7 @@ class Pipeline:
             log=True,
             use_amp=self.cfg.use_amp,
             num_samples=self.cfg.eval_gen_samples,
+            plot_kwargs=self.plot_kwargs,
         )
 
         # 4. Visualize final generation samples
@@ -121,8 +130,8 @@ class Pipeline:
 
         return generative_model, eval_res
 
-    def _build_and_train(self) -> torch.nn.Module:
-        """Routes to the correct training methodology and returns the generative model."""
+    def _build_and_train(self) -> Tuple[torch.nn.Module, Dict[str, float]]:
+        """Routes to the correct training methodology and returns all evaluation artifacts."""
         self.logger.info(
             f"Initializing training pipeline for model type: {self.cfg.model.type.upper()}"
         )
@@ -139,13 +148,19 @@ class Pipeline:
             return self._run_scone()
         elif self.cfg.model.type == "enot":
             return self._run_enot()
+        elif self.cfg.model.type == "fbsde":
+            return self._run_fbsde()
         else:
             return self._run_standard()
 
     def _eval_callback(
-        self, model: torch.nn.Module, direction: str, epoch: Optional[int] = None
+        self,
+        model: torch.nn.Module,
+        direction: str,
+        epoch: Optional[int] = None,
     ) -> Dict[str, float]:
         """Internal callback passed to the trainers for mid-training evaluation."""
+
         eval_res = self.evaluator.evaluate(
             model,
             num_samples=self.cfg.track_gen_samples,
@@ -153,7 +168,7 @@ class Pipeline:
             direction=direction,
             epoch=epoch,
             cfg=self.cfg,
-            trainer=self.trainer,
+            plot_kwargs=self.plot_kwargs,
         )
 
         return eval_res
@@ -439,6 +454,9 @@ class Pipeline:
             use_compile=False,  # torch.compile frequently breaks on double autograd
         )
 
+        # Configure plotting artifacts for EBM
+        self.plot_kwargs = {"buffer_y": self.trainer.replay_buffer_y}
+
         # Standard epoch orchestration inherited from Trainer
         gen_model, metrics = self.trainer.fit(
             epochs=self.cfg.epochs,
@@ -490,6 +508,9 @@ class Pipeline:
             use_ema=self.cfg.use_ema,
             use_compile=False,  # Disable compile to protect double-autograd
         )
+
+        # Configure plotting artifacts for SCONE
+        self.plot_kwargs = {"buffer_y": self.trainer.replay_buffer_y}
 
         gen_model, metrics = self.trainer.fit(
             epochs=self.cfg.epochs,
@@ -554,12 +575,65 @@ class Pipeline:
             use_compile=self.use_compile,  # ENOT uses standard backprop through time, so compilation is safe
         )
 
+        # Configure plotting artifacts for ENOT
+        self.plot_kwargs = {"target_epsilon": self.trainer.target_epsilon}
+
         gen_model, metrics = self.trainer.fit(
             epochs=self.cfg.epochs,
             save_per=self.cfg.model.get("save_interval", 500),
             save_path=self.cfg.models_path,
             eval_callback=self._eval_callback,
             eval_per=self.cfg.eval_per,
+        )
+
+        return gen_model, metrics
+
+    def _run_fbsde(self) -> torch.nn.Module:
+        f_model = self._build_model("sde", "sbfbsde_f_model_init", name="f_model")
+        b_model = self._build_model("sde", "sbfbsde_b_model_init", name="b_model")
+
+        self.logger.info(f"SB-FBSDE Models deployed on: {self.device}")
+
+        f_opt = optim.AdamW(
+            f_model.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.cfg.weight_decay,
+        )
+        b_opt = optim.AdamW(
+            b_model.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.cfg.weight_decay,
+        )
+
+        self.trainer = FBSDETrainer(
+            forward_model=f_model,
+            backward_model=b_model,
+            dataset=self.train_dataset,
+            forward_opt=f_opt,
+            backward_opt=b_opt,
+            device=self.device,
+            metric_logger=self.metric_logger,
+            seed=self.cfg.seed,
+            sigma=self.normalized_sigma,
+            batch_size=self.batch_size,
+            sde_steps=self.cfg.model.get("sim_steps", 200),
+            num_cache_batches=self.cfg.model.get("num_cache_batches", 10),
+            grad_clip=self.cfg.grad_clip,
+            refresh_every=self.cfg.model.get("refresh_every", 500),
+            use_amp=self.cfg.use_amp,
+            use_ema=self.cfg.use_ema,
+            use_compile=False,  # Disable torch.compile due to double-autograd (Hutchinson)
+        )
+
+        gen_model, metrics = self.trainer.fit(
+            ipf_iterations=self.cfg.epochs,
+            inner_iterations=self.cfg.model.get("num_iter", 5000),
+            save_per=self.cfg.model.get("save_interval", 500),
+            save_path=self.cfg.models_path,
+            eval_callback=self._eval_callback,
+            eval_per=self.cfg.eval_per,
+            use_wrapper=True,
+            eval_forward=False,
         )
 
         return gen_model, metrics
