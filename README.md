@@ -1,5 +1,9 @@
 # Schrodinger-Problem-Benchmark
 
+Note that this README is outdated! It will be updated soon.
+
+---
+
 ## Foundational Literature
 * [Foundations of Schrodinger Bridges for Generative Modeling](https://arxiv.org/pdf/2603.18992): This paper provides the modern mathematical foundation linking optimal transport, stochastic control, and path-space optimization directly to contemporary generative models.
 
