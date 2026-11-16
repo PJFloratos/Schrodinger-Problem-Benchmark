@@ -9,6 +9,7 @@ from src.training import (
     SCONETrainer,
     ENOTTrainer,
     FBSDETrainer,
+    IAMTrainer,
 )
 from src.metrics import Evaluator
 from src.metrics.plot import (
@@ -150,6 +151,8 @@ class Pipeline:
             return self._run_enot()
         elif self.cfg.model.type == "fbsde":
             return self._run_fbsde()
+        elif self.cfg.model.type == "iam":
+            return self._run_iam()
         else:
             return self._run_standard()
 
@@ -627,6 +630,59 @@ class Pipeline:
 
         gen_model, metrics = self.trainer.fit(
             ipf_iterations=self.cfg.epochs,
+            inner_iterations=self.cfg.model.get("num_iter", 5000),
+            save_per=self.cfg.model.get("save_interval", 500),
+            save_path=self.cfg.models_path,
+            eval_callback=self._eval_callback,
+            eval_per=self.cfg.eval_per,
+            use_wrapper=True,
+            eval_forward=False,
+        )
+
+        return gen_model, metrics
+
+    def _run_iam(self) -> Tuple[torch.nn.Module, Dict[str, float]]:
+        f_model = self._build_model("iam", "iam_f_model_init", name="f_model")
+        b_model = self._build_model("iam", "iam_b_model_init", name="b_model")
+        self.logger.info(f"IAM Models deployed on: {self.device}")
+
+        f_opt = optim.AdamW(
+            f_model.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.cfg.weight_decay,
+        )
+        b_opt = optim.AdamW(
+            b_model.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.cfg.weight_decay,
+        )
+
+        self.trainer = IAMTrainer(
+            forward_model=f_model,
+            backward_model=b_model,
+            dataset=self.train_dataset,
+            forward_opt=f_opt,
+            backward_opt=b_opt,
+            device=self.device,
+            metric_logger=self.metric_logger,
+            seed=self.cfg.seed,
+            batch_size=self.batch_size,
+            sde_steps=self.cfg.model.get("sim_steps", 200),
+            num_cache_batches=self.cfg.model.get("num_cache_batches", 10),
+            refresh_every=self.cfg.model.get("refresh_every", 500),
+            sigma=self.normalized_sigma,
+            gamma=self.gamma,
+            reference=self.cfg.get("reference", "brownian"),
+            first_coupling=self.cfg.model.get("first_coupling", "ind"),
+            exact_laplacian=self.cfg.model.get("exact_laplacian", None),
+            grad_clip=self.cfg.grad_clip,
+            use_amp=False,
+            use_ema=self.cfg.use_ema,
+            use_compile=False,
+        )
+
+        gen_model, metrics = self.trainer.fit(
+            imf_iterations=self.cfg.epochs,
             inner_iterations=self.cfg.model.get("num_iter", 5000),
             save_per=self.cfg.model.get("save_interval", 500),
             save_path=self.cfg.models_path,

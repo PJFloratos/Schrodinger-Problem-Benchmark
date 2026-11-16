@@ -1,7 +1,7 @@
 from src.training.base_trainer import BaseTrainer
 from src.core.dynamics import ConditionalVectorField
 from src.core.solver import EulerSampler
-from src.models.components import EMAHelper
+from src.models.components import EMAHelper, IterWrapper
 from src.utils.seed import derive_seed
 from src.utils import save_model, text_logger
 
@@ -78,6 +78,7 @@ class IMFTrainer(BaseTrainer):
             use_amp=use_amp,
         )
 
+        self.model_type = "imf"
         self.f_opt = forward_opt
         self.b_opt = backward_opt
         self.sde_steps = sde_steps
@@ -334,6 +335,8 @@ class IMFTrainer(BaseTrainer):
         save_path: Union[str, None] = None,
         eval_per: Optional[int] = None,
         eval_callback: Optional[Callable] = None,
+        use_wrapper: bool = False,
+        eval_forward: bool = False,
     ):
         # Models to evaluate/save: the EMA copies if enabled, else the live base models
         f_eval = self.f_ema.model if self.use_ema else self.f_model_base
@@ -369,16 +372,31 @@ class IMFTrainer(BaseTrainer):
                 and (n % eval_per == 0)
             )
             if _run_eval:
-                with self._isolated_global_rng(derive_seed(self.seed, "imf_eval")):
-                    b_metrics.update(eval_callback(b_eval, direction="b"))
+                if use_wrapper:
+                    _model_b = IterWrapper(
+                        f_model=f_eval,
+                        b_model=b_eval,
+                        sigma=self.sigma,
+                        direction="b",
+                        model_type=self.model_type,
+                    )
+                else:
+                    _model_b = b_eval
+
+                with self._isolated_global_rng(
+                    derive_seed(self.seed, f"{self.model_type}_eval")
+                ):
+                    b_metrics.update(eval_callback(_model_b, direction="b", epoch=n))
+
+                _log = self.logger.info
+            else:
+                _log = self.logger.debug
 
             self.log_phase_end("backward", n, b_metrics)
 
             # Dynamically format the log string based on whether evaluation ran
             qual_str = self._format_eval_str(b_metrics, _run_eval, prefix="B-")
-            self.logger.info(
-                f"Iteration {n} (Backward) | B-Loss: {b_loss:.4f} | {qual_str}"
-            )
+            _log(f"Iteration {n} (Backward) | B-Loss: {b_loss:.4f} | {qual_str}")
 
             # ==========================================
             # Phase 2: Train Forward Model (data -> prior)
@@ -398,9 +416,23 @@ class IMFTrainer(BaseTrainer):
                 "phase_time_sec": time.time() - phase_start,
                 "train_nfes": self.total_nfes - nfes_before,
             }
-            if _run_eval:
-                with self._isolated_global_rng(derive_seed(self.seed, "imf_eval")):
-                    f_metrics.update(eval_callback(f_eval, direction="f"))
+            if _run_eval and eval_forward:
+                if use_wrapper:
+                    _model_f = IterWrapper(
+                        f_model=f_eval,
+                        b_model=b_eval,
+                        sigma=self.sigma,
+                        direction="f",
+                        model_type=self.model_type,
+                    )
+                else:
+                    _model_f = f_eval
+
+                with self._isolated_global_rng(
+                    derive_seed(self.seed, f"{self.model_type}_eval")
+                ):
+                    f_metrics.update(eval_callback(_model_f, direction="f", epoch=n))
+
                 _log = self.logger.info
             else:
                 _log = self.logger.debug
@@ -445,4 +477,15 @@ class IMFTrainer(BaseTrainer):
                 f"{save_path}/{self.f_model_base.__class__.__name__}_forward_final.pth",
             )
 
-        return self.b_model_base, {"f_metrics": f_metrics, "b_metrics": b_metrics}
+        if use_wrapper:
+            _model = IterWrapper(
+                f_model=self.f_model_base,
+                b_model=self.b_model_base,
+                sigma=self.sigma,
+                direction="b",
+                model_type=self.model_type,
+            )
+        else:
+            _model = self.b_model_base
+
+        return _model, {"f_metrics": f_metrics, "b_metrics": b_metrics}

@@ -8,54 +8,74 @@ import math
 
 
 class VelocityMLP(nn.Module):
-    def __init__(self, d=2, hidden=128, time_dim=64, model_type="sde"):
+    def __init__(
+        self,
+        d=2,
+        hidden=128,
+        time_dim=64,
+        model_type="sde",
+        fourier_scale=0.5,
+        use_fourier=True,
+    ):
         super().__init__()
         self.model_type = model_type
+        self.use_fourier = use_fourier and (model_type == "iam")
 
-        # 1. Time Embedding & Encoder (Matches DSB pos_dim=16, t_enc_dim=32)
-        self.time_embed = SinusoidalTimeEmbedding(dim=time_dim)
+        # 1. Time Embedding & Encoder
+        if model_type == "iam":
+            self.time_embed = SinusoidalTimeEmbedding(
+                dim=time_dim, scale=10.0, max_period=10.0
+            )
+        else:
+            self.time_embed = SinusoidalTimeEmbedding(dim=time_dim)
+
         self.time_encoder = nn.Sequential(
             nn.Linear(time_dim, hidden),
-            # nn.LeakyReLU(),
             nn.SiLU(),
             nn.Linear(hidden, time_dim * 2),
-            # nn.LeakyReLU(),
             nn.SiLU(),
         )
 
-        # 2. Spatial Encoder (Matches DSB encoder_layers=[16], t_enc_dim=32)
+        # 2. Spatial Encoder
+        if self.use_fourier:
+            fourier_dim = 32
+            self.fourier = FourierFeatures(
+                in_features=d,
+                mapping_size=fourier_dim,
+                scale=fourier_scale,
+            )
+            x_in_dim = d + fourier_dim * 2
+        else:
+            self.fourier = None
+            x_in_dim = d
+
         self.x_encoder = nn.Sequential(
-            nn.Linear(d, hidden),
-            # nn.LeakyReLU(),
+            nn.Linear(x_in_dim, hidden),
             nn.SiLU(),
             nn.Linear(hidden, time_dim * 2),
-            # nn.LeakyReLU(),
             nn.SiLU(),
         )
 
-        # 3. Decoder Network (Matches DSB decoder_layers=[128, 128])
+        # 3. Decoder Network
         self.net = nn.Sequential(
             nn.Linear(time_dim * 4, hidden),
-            # nn.LeakyReLU(),
             nn.SiLU(),
             nn.Linear(hidden, hidden),
-            # nn.LeakyReLU(),
             nn.SiLU(),
-            nn.Linear(hidden, d),
+            nn.Linear(hidden, 1 if model_type == "iam" else d),
         )
 
     def forward(self, x, t):
-        # Encode spatial features
-        xemb = self.x_encoder(x)
+        x_in = torch.cat([x, self.fourier(x)], dim=-1) if self.use_fourier else x
+        xemb = self.x_encoder(x_in)
 
-        # Obtain sinusoidal representation and encode it
         t_emb = self.time_embed(t)
         temb = self.time_encoder(t_emb)
 
-        # Concatenate encoded representations and decode
         h = torch.cat([xemb, temb], dim=-1)
+        out = self.net(h)
 
-        return self.net(h)
+        return out
 
 
 class EnergyMLP(nn.Module):

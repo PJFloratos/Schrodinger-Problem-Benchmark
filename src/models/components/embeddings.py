@@ -6,19 +6,22 @@ import math
 class SinusoidalTimeEmbedding(nn.Module):
     """Standard sinusoidal time embedding for diffusion/flow models."""
 
-    def __init__(self, dim):
+    def __init__(self, dim: int, scale: float = 1000.0, max_period: float = 10000.0):
         super().__init__()
         self.dim = dim
+        self.scale = scale
+        self.max_period = max_period
 
     def forward(self, t):
         device = t.device
 
-        # Scale continuous time [0,1] to [0, 1000] so frequencies resolve properly
-        t = t * 1000.0
+        t = t * self.scale
 
         half_dim = self.dim // 2
-        embeddings = math.log(10000) / (half_dim - 1)
-        embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
+        embeddings = math.log(self.max_period) / max(half_dim - 1, 1)
+        embeddings = torch.exp(
+            torch.arange(half_dim, device=device, dtype=t.dtype) * -embeddings
+        )
         embeddings = t * embeddings[None, :]
-        embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
-        return embeddings
+
+        return torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)

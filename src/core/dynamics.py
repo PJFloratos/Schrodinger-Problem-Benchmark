@@ -169,6 +169,213 @@ class ConditionalVectorField:
         )
 
     # =========================================================================
+    # Iterative Action Matching (IAM) Specific Math
+    # =========================================================================
+    @staticmethod
+    def get_iam_reference_params(
+        x: torch.Tensor,
+        sigma: float = 1.0,
+        gamma: float = 1.0,
+        reference: str = "brownian",
+    ) -> Tuple[torch.Tensor, float]:
+        """
+        Returns the forward reference drift f_t(x) and squared diffusion sigma_t^2
+        for R_sigma ('brownian') or R_gamma ('ou').
+        """
+        if reference == "brownian":
+            return torch.zeros_like(x), float(sigma**2)
+        elif reference == "ou":
+            return -gamma * x, float(2.0 * gamma)
+        raise ValueError(f"Unsupported reference process for IAM: {reference!r}")
+
+    @classmethod
+    def sample_iam_bridge(
+        cls,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        t: torch.Tensor,
+        gen: torch.Generator,
+        sigma: float = 1.0,
+        gamma: float = 1.0,
+        reference: str = "brownian",
+        memory_format=torch.contiguous_format,
+    ) -> torch.Tensor:
+        """
+        Samples x_t ~ q_{t|01}(. | x0, x1) = N(mu_t(x0, x1), Sigma_t)
+        in closed form for either R_sigma or R_gamma.
+        """
+        B = x0.shape[0]
+        t_exp = t.view(B, *([1] * (x0.ndim - 1)))
+        z = cls._randn_like(x0, gen, memory_format)
+
+        if reference == "brownian":
+            mu_t = (1.0 - t_exp) * x0 + t_exp * x1
+            std_t = sigma * torch.sqrt(t_exp * (1.0 - t_exp))
+            return mu_t + std_t * z
+
+        elif reference == "ou":
+            # Use -expm1(-u) = 1 - exp(-u) for numerical stability near t=0 and t=1
+            denom = -math.expm1(-2.0 * gamma)
+            num_0 = -torch.expm1(-2.0 * gamma * (1.0 - t_exp))
+            num_1 = -torch.expm1(-2.0 * gamma * t_exp)
+
+            coef_0 = (num_0 / denom) * torch.exp(-gamma * t_exp)
+            coef_1 = (num_1 / denom) * torch.exp(-gamma * (1.0 - t_exp))
+            mu_t = coef_0 * x0 + coef_1 * x1
+
+            var_t = (num_0 * num_1) / denom
+            std_t = torch.sqrt(var_t.clamp_min(1e-12))
+            return mu_t + std_t * z
+
+        raise ValueError(f"Unsupported reference process for IAM: {reference!r}")
+
+    @staticmethod
+    def compute_action_laplacian(
+        grad_x: torch.Tensor,
+        x: torch.Tensor,
+        exact: bool = True,
+        gen: Optional[torch.Generator] = None,
+        create_graph: bool = True,
+    ) -> torch.Tensor:
+        """
+        Computes the spatial Laplacian Delta_x s_t(x) = Tr(nabla_x^2 s_t(x))
+        either exactly (O(d) backward passes) or via Hutchinson's trace estimator (O(1)).
+        """
+        B = x.shape[0]
+        flat_grad = grad_x.reshape(B, -1)
+        d = flat_grad.shape[1]
+
+        if exact:
+            lap = torch.zeros(B, device=x.device, dtype=x.dtype)
+            for i in range(d):
+                grad2_i = torch.autograd.grad(
+                    outputs=flat_grad[:, i].sum(),
+                    inputs=x,
+                    create_graph=create_graph,
+                    retain_graph=True,
+                )[0]
+                lap = lap + grad2_i.reshape(B, -1)[:, i]
+            return lap
+
+        # Hutchinson's Rademacher trace estimator: E[z^T nabla_x (grad_x^T z)]
+        z = (
+            torch.randint(0, 2, x.shape, device=x.device, generator=gen).to(x.dtype)
+            * 2.0
+            - 1.0
+        )
+        hvp = torch.autograd.grad(
+            outputs=grad_x,
+            inputs=x,
+            grad_outputs=z,
+            create_graph=create_graph,
+            retain_graph=True,
+        )[0]
+        return (hvp * z).reshape(B, -1).sum(dim=1)
+
+    @classmethod
+    def compute_iam_loss(
+        cls,
+        model: torch.nn.Module,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        direction: str = "b",
+        sigma: float = 1.0,
+        gamma: float = 1.0,
+        reference: str = "brownian",
+        exact_laplacian: bool = True,
+        gen: Optional[torch.Generator] = None,
+        create_graph: bool = True,
+    ) -> torch.Tensor:
+        """
+        Evaluates the empirical Conditional Entropic Action Matching loss:
+          L_SB^F (direction='f'): + 0.5 * sigma_t^2 * Delta_x s_t
+          L_SB^B (direction='b'): - 0.5 * sigma_t^2 * Delta_x s_t
+        """
+        B = x0.shape[0]
+        device, dtype = x0.device, x0.dtype
+
+        # 1. Stratified sin^2 importance sampling in time and bridge state x_t
+        u = (
+            torch.arange(B, device=device, dtype=dtype).unsqueeze(1)
+            + torch.rand(B, 1, device=device, generator=gen, dtype=dtype)
+        ) / B
+        u = 1e-3 + (1.0 - 2e-3) * u
+        t = torch.sin(0.5 * math.pi * u).pow(2)
+        dt_du = (0.5 * math.pi * torch.sin(math.pi * u)).view(B)
+
+        x_t = cls.sample_iam_bridge(
+            x0=x0,
+            x1=x1,
+            t=t,
+            gen=gen,
+            sigma=sigma,
+            gamma=gamma,
+            reference=reference,
+            memory_format=torch.contiguous_format,
+        )
+
+        # 2. Gauge-fixed boundary term: [s(x0, 0) - s(mu0, 0)] - [s(x1, 1) - s(mu1, 1)]
+        mu0 = x0.detach().mean(dim=0, keepdim=True)
+        mu1 = x1.detach().mean(dim=0, keepdim=True)
+
+        x_bnd = torch.cat([x0, x1, mu0, mu1], dim=0)
+        t_bnd = torch.cat(
+            [
+                torch.zeros(B, 1, device=device, dtype=dtype),
+                torch.ones(B, 1, device=device, dtype=dtype),
+                torch.zeros(1, 1, device=device, dtype=dtype),
+                torch.ones(1, 1, device=device, dtype=dtype),
+            ],
+            dim=0,
+        )
+        s_bnd = model(x_bnd, t_bnd).view(-1)
+        boundary_term = (s_bnd[:B] - s_bnd[-2]) - (s_bnd[B : 2 * B] - s_bnd[-1])
+
+        # 3. First-order gradients and spatial Laplacian of s_bar(x_t, t)
+        x_t = x_t.detach().requires_grad_(True)
+        t_in = t.detach().requires_grad_(True)
+
+        t_bcast = t_in.view(B, *([1] * (x_t.ndim - 1)))
+        x_bar_t = (1.0 - t_bcast) * mu0 + t_bcast * mu1
+
+        s_pair = model(
+            torch.cat([x_t, x_bar_t], dim=0),
+            torch.cat([t_in, t_in], dim=0),
+        ).view(2 * B)
+        s_t = s_pair[:B] - s_pair[B:]
+
+        # Keep create_graph=True here so lap_x can compute second spatial derivatives
+        grad_x, grad_t = torch.autograd.grad(
+            outputs=s_t.sum(),
+            inputs=(x_t, t_in),
+            create_graph=True,
+        )
+        lap_x = cls.compute_action_laplacian(
+            grad_x=grad_x,
+            x=x_t,
+            exact=exact_laplacian,
+            gen=gen,
+            create_graph=create_graph,
+        )
+
+        # 4. Assemble integrand
+        f_t, sigma_t_sq = cls.get_iam_reference_params(
+            x_t, sigma=sigma, gamma=gamma, reference=reference
+        )
+        grad_flat = grad_x.reshape(B, -1)
+        f_flat = f_t.reshape(B, -1)
+
+        kinetic_and_drift = (grad_flat * (f_flat + 0.5 * sigma_t_sq * grad_flat)).sum(
+            dim=1
+        )
+        lap_sign = 1.0 if direction == "f" else -1.0
+        integrand = (
+            kinetic_and_drift + grad_t.view(B) + lap_sign * 0.5 * sigma_t_sq * lap_x
+        )
+
+        return (boundary_term + dt_du * integrand).mean()
+
+    # =========================================================================
     # Closed-Form Interpolants
     # =========================================================================
 

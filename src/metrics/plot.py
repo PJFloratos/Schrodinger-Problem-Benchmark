@@ -70,7 +70,7 @@ def _build_experiment_signature(cfg: DictConfig) -> str:
     if m_type in ["flow_m", "minibatch"]:
         parts.remove(f"{cfg.sigma}sig")
         parts.append(f"{cfg.model.get('sim_steps', 0)}ss")
-    elif m_type in ["ipf", "imf", "sf2m", "fbsde"]:
+    elif m_type in ["ipf", "imf", "sf2m", "fbsde", "iam"]:
         parts.append(f"{cfg.model.get('num_iter', 0)}it")
         parts.append(f"{cfg.model.get('sim_steps', 0)}ss")
     elif m_type == "sf2m":

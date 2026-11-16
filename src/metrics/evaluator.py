@@ -209,7 +209,7 @@ class Evaluator:
 
         # EBM loss requires MCMC and spatial autograd. The EBMTrainer handles this.
         # We bypass it here to prevent inference_mode crashes.
-        if model.model_type in ["ebm", "scone", "enot_drift", "fbsde"]:
+        if model.model_type in ["ebm", "scone", "enot_drift", "fbsde", "iam"]:
             return None
 
         gen = self._noise_gen
@@ -370,7 +370,11 @@ class Evaluator:
         else:
             results["eval_MMD"] = float(get_mmd(x_ref, x_gen, device=self.device))
 
-            if self.ground_truth_v and direction == "b" and model.model_type != "ebm":
+            if (
+                self.ground_truth_v
+                and direction == "b"
+                and model.model_type not in ["ebm", "iam"]
+            ):
                 results["drift_MSE"] = get_drift_mse(model, self.ground_truth_v, x_gen)
 
         return results

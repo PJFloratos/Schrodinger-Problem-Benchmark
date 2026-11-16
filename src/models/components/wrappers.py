@@ -95,15 +95,19 @@ class IterWrapper(nn.Module):
         f_model: nn.Module,
         b_model: nn.Module,
         sigma: float,
+        gamma: float = 1.0,
         direction: str = "b",
         model_type: str = "fbsde",
+        reference: str = "brownian",
     ):
         super().__init__()
         self.f = f_model
         self.b = b_model
         self.sigma = sigma
+        self.gamma = gamma
         self.direction = direction
         self.model_type = model_type
+        self.reference = reference
 
     def forward(self, x, t):
         # The Evaluator's generic validation loss simply calls `model(x, t)`.

@@ -82,18 +82,31 @@ class EulerSampler:
         """Integrates the vector field using the appropriate solver strategy."""
 
         # 1. Resolve Direction & Device
-        is_forward = x_init is not None
-        if is_forward:
+        # is_forward = x_init is not None
+        # if is_forward:
+        #     device = x_init.device
+        #     n_samples = x_init.shape[0]
+        #     is_channels_last = x_init.is_contiguous(memory_format=torch.channels_last)
+        #     desc = "    Forward Sim"
+        # else:
+        #     if shape is None:
+        #         raise ValueError("Must provide either `x_init` or `shape`.")
+        #     device = torch.device(device)
+        #     is_channels_last = False
+        #     desc = "    Generating Samples"
+        is_forward = solver_kwargs.pop("is_forward", x_init is not None)
+        if x_init is not None:
             device = x_init.device
             n_samples = x_init.shape[0]
+            shape = tuple(x_init.shape[1:])
             is_channels_last = x_init.is_contiguous(memory_format=torch.channels_last)
-            desc = "    Forward Sim"
         else:
             if shape is None:
                 raise ValueError("Must provide either `x_init` or `shape`.")
             device = torch.device(device)
             is_channels_last = False
-            desc = "    Generating Samples"
+
+        desc = "    Forward Sim" if is_forward else "    Generating Samples"
 
         if drop_last_noise is None:
             drop_last_noise = not is_forward
@@ -123,6 +136,7 @@ class EulerSampler:
                 g_step=g_step,
                 **solver_kwargs,
             )
+
         elif self.model_type == "lightsbm":
             out = self._generate_lightsbm(
                 model=model,
@@ -135,6 +149,7 @@ class EulerSampler:
                 desc=desc,
                 g_init=g_init,
             )
+
         elif self.model_type == "scone":
             out = self._generate_scone(
                 model=model,
@@ -173,6 +188,24 @@ class EulerSampler:
                 n_samples=n_samples,
                 device=device,
                 batch_size=batch_size,
+                desc=desc,
+                g_init=g_init,
+                g_step=g_step,
+                **solver_kwargs,
+            )
+
+        elif self.model_type == "iam":
+            out = self._generate_iam(
+                model=model,
+                shape=shape,
+                x_init=x_init,
+                n_samples=n_samples,
+                device=device,
+                batch_size=batch_size,
+                drop_last_noise=drop_last_noise,
+                is_forward=is_forward,
+                is_channels_last=is_channels_last,
+                verbose=verbose,
                 desc=desc,
                 g_init=g_init,
                 g_step=g_step,
@@ -661,4 +694,131 @@ class EulerSampler:
         if pbar:
             pbar.close()
 
+        return out
+
+    # =========================================================================
+    # Iterative Action Matching (IAM) Specific Methods
+    # =========================================================================
+    @staticmethod
+    def _iam_spatial_grad(
+        potential_model: torch.nn.Module, x: torch.Tensor, t: torch.Tensor
+    ) -> torch.Tensor:
+        """Computes nabla_x s_t(x) safely inside @torch.no_grad() sampling contexts."""
+        with torch.enable_grad():
+            x_in = x.detach().requires_grad_(True)
+            s = potential_model(x_in, t)
+            grad_x = torch.autograd.grad(s.sum(), x_in, create_graph=False)[0]
+        return grad_x.detach()
+
+    def _generate_iam(
+        self,
+        model,
+        shape,
+        x_init,
+        n_samples,
+        device,
+        batch_size,
+        drop_last_noise,
+        is_forward,
+        is_channels_last,
+        verbose,
+        desc,
+        g_init,
+        g_step,
+        **kwargs,
+    ) -> List[torch.Tensor]:
+        """
+        Strategy: Graded Euler-Maruyama SDE or Probability Flow ODE for IAM potentials.
+        Convention:
+          - is_forward=True  (x_init = x0 ~ p0): integrates t: 0 -> 1 using s^F
+          - is_forward=False (x_init = x1 ~ p1 or prior): integrates t: 1 -> 0 using s^B
+          - use_ode=True (requires model to expose .f and .b): integrates deterministic PF-ODE
+        """
+        from src.core.dynamics import ConditionalVectorField
+
+        integration_steps = int(self.steps * self.t_end)
+        sigma = getattr(model, "sigma", kwargs.get("sigma", 1.0))
+        gamma = getattr(model, "gamma", kwargs.get("gamma", 1.0))
+        reference = getattr(model, "reference", kwargs.get("reference", "brownian"))
+        use_ode = kwargs.get("use_ode", False)
+
+        # Resolve potential network(s) and constant diffusion scale once
+        has_fb = hasattr(model, "f") and hasattr(model, "b")
+        pot_net = (model.f if is_forward else model.b) if has_fb else model
+        _, sigma_t_sq = ConditionalVectorField.get_iam_reference_params(
+            torch.empty(1, device=device), sigma=sigma, gamma=gamma, reference=reference
+        )
+        sigma_t = math.sqrt(sigma_t_sq)
+        sign = 1.0 if is_forward else -1.0
+
+        # sin^2 graded schedule clusters steps near t=0 and t=1
+        u_grid = torch.linspace(0.0, 1.0, self.steps + 1, device=device)
+        t_grid = torch.sin(0.5 * math.pi * u_grid).pow(2)
+        if not is_forward:
+            t_grid = torch.flip(t_grid, dims=[0])
+
+        pbar = (
+            tqdm(
+                total=math.ceil(n_samples / batch_size) * integration_steps,
+                ascii=True,
+                desc=desc,
+                leave=False,
+            )
+            if verbose
+            else None
+        )
+
+        out = []
+        for start in range(0, n_samples, batch_size):
+            n = min(batch_size, n_samples - start)
+            if x_init is not None:
+                x = x_init[start : start + n].clone()
+            else:
+                x = torch.randn(n, *shape, device=device, generator=g_init)
+                if is_channels_last:
+                    x = x.contiguous(memory_format=torch.channels_last)
+                # if reference in ("bm", "brownian"):
+                #     x = x * sigma
+
+            t_tensor = torch.empty(n, 1, device=device, dtype=x.dtype)
+
+            for i in range(integration_steps):
+                t_curr = float(t_grid[i].item())
+                dt = abs(float(t_grid[i + 1].item()) - t_curr)
+                t_tensor.fill_(t_curr)
+
+                f_t, _ = ConditionalVectorField.get_iam_reference_params(
+                    x, sigma=sigma, gamma=gamma, reference=reference
+                )
+
+                if use_ode and has_fb:
+                    grad_f = self._iam_spatial_grad(model.f, x, t_tensor)
+                    grad_b = self._iam_spatial_grad(model.b, x, t_tensor)
+                    u_ctrl = f_t + 0.5 * sigma_t_sq * (grad_f + grad_b)
+                else:
+                    grad_s = self._iam_spatial_grad(pot_net, x, t_tensor)
+                    u_ctrl = f_t + sigma_t_sq * grad_s
+
+                drift = sign * u_ctrl
+                drop_noise = use_ode or (
+                    drop_last_noise and (i == integration_steps - 1)
+                )
+
+                if drop_noise:
+                    x = self.euler_maruyama_step(x, drift, dt)
+                else:
+                    noise = torch.randn(
+                        x.shape, device=device, dtype=x.dtype, generator=g_step
+                    )
+                    if is_channels_last:
+                        noise = noise.contiguous(memory_format=torch.channels_last)
+                    x = self.euler_maruyama_step(x, drift, dt, noise, sigma_t)
+
+                if pbar:
+                    pbar.update(1)
+
+            out.append(x)
+
+        if pbar:
+            pbar.close()
         return out

@@ -1,4 +1,5 @@
 from src.core.dynamics import ConditionalVectorField
+from src.core.solver import EulerSampler
 from src.models.components import EMAHelper
 from src.utils.seed import derive_seed
 
@@ -243,7 +244,7 @@ class BaseTrainer(ABC):
         )
 
         # Dynamically enable gradients ONLY for SB-FBSDE (needed for Hutchinson trace)
-        with torch.set_grad_enabled(model_type == "fbsde"):
+        with torch.set_grad_enabled(model_type in ["fbsde", "iam"]):
 
             # Data Unpacking (Differs based on cache structure)
             if model_type == "imf":
@@ -271,6 +272,19 @@ class BaseTrainer(ABC):
                 t_net = self._probe_tensors[1][idx]
                 target = self._probe_tensors[2][idx]  # Z_impt of the opposite network
                 x_t.requires_grad_(True)
+            elif model_type == "iam":
+                x0, x1 = self._probe_tensors[0][idx], self._probe_tensors[1][idx]
+                x_t = ConditionalVectorField.sample_iam_bridge(
+                    x0=x0,
+                    x1=x1,
+                    t=t,
+                    gen=gen,
+                    sigma=self.sigma,
+                    gamma=self.gamma,
+                    reference=self.reference,
+                    memory_format=self.memory_format,
+                )
+
             else:
                 raise ValueError(
                     f"Probe loss not implemented for model type: {model_type}"
@@ -283,7 +297,7 @@ class BaseTrainer(ABC):
         with torch.autocast(
             device_type=self.device.type, dtype=self.amp_dtype, enabled=self.use_amp
         ):
-            if model_type == "sbfbsde":
+            if model_type == "fbsde":
                 # SB-FBSDE custom divergence loss
                 z_opt = model(x_t, t_net)
                 div_gz = ConditionalVectorField.compute_div_gz(
@@ -292,6 +306,20 @@ class BaseTrainer(ABC):
                 loss = ConditionalVectorField.compute_sbfbsde_loss(
                     z_opt, target, div_gz, getattr(self, "h", 1.0)
                 )
+            elif model_type == "iam":
+                with torch.enable_grad():
+                    loss = ConditionalVectorField.compute_iam_loss(
+                        model=model,
+                        x0=x0,
+                        x1=x1,
+                        direction=phase,
+                        sigma=self.sigma,
+                        gamma=self.gamma,
+                        reference=self.reference,
+                        exact_laplacian=self.exact_laplacian,
+                        gen=gen,
+                        create_graph=False,  # Free second-order graph immediately
+                    )
             else:
                 # Standard matching loss for IPF, IMF, etc.
                 # pred = model(x_t, t_net)
@@ -434,7 +462,12 @@ class BaseTrainer(ABC):
         t_probe = torch.full(
             (self.fixed_probe_batch.size(0), 1), 0.5, device=self.device
         )
-        current_outputs = model(self.fixed_probe_batch, t_probe)
+        if model.model_type == "iam":
+            current_outputs = EulerSampler._iam_spatial_grad(
+                model, self.fixed_probe_batch, t_probe
+            )
+        else:
+            current_outputs = model(self.fixed_probe_batch, t_probe)
 
         if self.previous_model_outputs is not None:
             drift = torch.norm(
@@ -468,8 +501,16 @@ class BaseTrainer(ABC):
             t_tensor = torch.full(
                 (self.fixed_probe_batch.size(0), 1), t_val, device=device
             )
-            f_vec = f_model(self.fixed_probe_batch, t_tensor)
-            b_vec = b_model(self.fixed_probe_batch, t_tensor)
+            if f_model.model_type == "iam":
+                f_vec = EulerSampler._iam_spatial_grad(
+                    f_model, self.fixed_probe_batch, t_tensor
+                )
+                b_vec = EulerSampler._iam_spatial_grad(
+                    b_model, self.fixed_probe_batch, t_tensor
+                )
+            else:
+                f_vec = f_model(self.fixed_probe_batch, t_tensor)
+                b_vec = b_model(self.fixed_probe_batch, t_tensor)
 
             # Measure field alignment consistency
             total_mse += torch.mean((f_vec + b_vec) ** 2).item()

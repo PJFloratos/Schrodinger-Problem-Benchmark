@@ -6,3 +6,4 @@ from src.training.ebm_trainer import EBMTrainer
 from src.training.scone_trainer import SCONETrainer
 from src.training.enot_trainer import ENOTTrainer
 from src.training.fbsde_trainer import FBSDETrainer
+from src.training.iam_trainer import IAMTrainer
