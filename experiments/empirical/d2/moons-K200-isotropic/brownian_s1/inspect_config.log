@@ -1,0 +1,10 @@
+reference: brownian_s1
+mode: empirical
+type: moons
+geometry: null
+n_components: 200
+cov_type: isotropic
+var: 0.002
+radius: null
+prior_std: 1.0
+bridge_seed: 99

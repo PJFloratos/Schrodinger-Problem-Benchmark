@@ -1,0 +1,10 @@
+reference: ou_g0.1
+mode: synthetic
+type: synthetic
+geometry: manifold
+n_components: 250
+cov_type: isotropic
+var: 0.0001
+radius: 2.0
+prior_std: 0.2
+bridge_seed: 99

@@ -3,8 +3,11 @@ from src.utils.log import text_logger
 import torch
 from torch import nn
 
-from os import remove
+import os
 from pathlib import Path
+from omegaconf import DictConfig, OmegaConf
+import json
+from typing import Dict, Union
 
 
 # Get the logger for this module
@@ -31,7 +34,7 @@ def save_model(model: torch.nn.Module, path: str, stops=False) -> None:
         if stops:
             logger.debug(f"Model `{model_name}` already exists; skipping save.")
             return
-        remove(path)
+        os.remove(path)
 
     # Save the Model
     torch.save(obj=model.state_dict(), f=path)
@@ -62,3 +65,20 @@ def load_model(
     logger.debug(f"Model successfully loaded from `{model_path}`.")
 
     return model
+
+
+def save_config_snapshot(
+    cfg: DictConfig, path: Union[str, Path], fmt: str = "log"
+) -> None:
+    """Writes a read-only resolved config snapshot to disk for reproducibility & sanity checks."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if fmt in ("log", "yaml"):
+        content = OmegaConf.to_yaml(cfg, resolve=True)
+        path.write_text(content, encoding="utf-8")
+    elif fmt == "json":
+        resolved = OmegaConf.to_container(cfg, resolve=True)
+        path.write_text(json.dumps(resolved, indent=2), encoding="utf-8")
+    else:
+        raise ValueError(f"Unsupported config snapshot format: {fmt}")

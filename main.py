@@ -5,6 +5,7 @@
 # https://github.com/SKholkin/LightSB-Matching/blob/main/src/lightsbm.py
 # https://github.com/ngushchin/EntropicNeuralOptimalTransport
 # https://github.com/ghliu/SB-FBSDE
+# https://github.com/ngushchin/EntropicOTBenchmark/tree/main
 
 
 from src.pipeline import Pipeline

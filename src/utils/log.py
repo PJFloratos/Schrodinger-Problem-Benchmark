@@ -9,6 +9,7 @@ def text_logger(
     console_level=logging.DEBUG,
     file_level=logging.INFO,
     log_file="run.log",
+    mode: str = "a",
 ) -> logging.Logger:
     """Configures the text logger with console and file handlers."""
     logger = logging.getLogger(name)
@@ -28,7 +29,7 @@ def text_logger(
         console_handler.setLevel(console_level)
 
         # Create the file handler and setting its level
-        file_handler = logging.FileHandler(log_file)
+        file_handler = logging.FileHandler(log_file, mode=mode)
         file_handler.setLevel(file_level)
 
         # Add the formatter to the handlers

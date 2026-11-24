@@ -1,0 +1,10 @@
+reference: brownian_s10
+mode: synthetic
+type: synthetic
+geometry: manifold
+n_components: 250
+cov_type: isotropic
+var: 0.001
+radius: 2.0
+prior_std: 1.0
+bridge_seed: 99

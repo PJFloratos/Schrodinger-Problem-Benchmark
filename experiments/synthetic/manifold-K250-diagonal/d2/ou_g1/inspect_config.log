@@ -1,0 +1,10 @@
+reference: ou_g1
+mode: synthetic
+type: synthetic
+geometry: manifold
+n_components: 250
+cov_type: diagonal
+var: 0.001
+radius: 3.0
+prior_std: 1.0
+bridge_seed: 99

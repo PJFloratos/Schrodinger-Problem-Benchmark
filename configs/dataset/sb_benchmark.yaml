@@ -1,0 +1,27 @@
+name: "SB-${.sb.mode}-K${.sb.n_components}-d${.input_dim}"
+type: "sb_benchmark"
+
+train_samples: 50000
+test_samples: 2000
+input_dim: 784
+
+paired: false          # false: marginals y ~ nu; true: paired (x, y) ~ pi*
+test_paired: true      # true: test split returns ground-truth pairs (x, y) ~ pi*
+
+sb:
+  mode: "empirical"    # "synthetic" (K=1 Gaussian or K>1 GMM) | "empirical" (K-means on dataset)
+  geometry: "manifold"     # "sphere" (K=1 Gaussian or spherical GMM) | "manifold" (embedded nonlinear curve)
+  n_components: 200      # set to 1 for unimodal Gaussian sanity check
+  cov_type: "isotropic" # "isotropic" | "diagonal" | "full"
+  var: 0.005            # base variance scale (or covariance regularization in empirical mode)
+  radius: 2.0          # sphere norm ||mu_k|| for synthetic modes (ignored in empirical mode)
+  prior_std: 1.0      # null -> defaults to ref.sample_prior (R_0); float -> N(0, prior_std^2 I)
+  bridge_seed: 99
+
+  # Used only when mode == "empirical"
+  base_dataset:
+    type: "mnist"
+    train_samples: 20000
+    test_samples: 2000
+
+# For cifar10 expect around 3 minutes

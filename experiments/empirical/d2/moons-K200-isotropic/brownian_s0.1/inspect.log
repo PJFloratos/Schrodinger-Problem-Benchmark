@@ -1,0 +1,14 @@
+2026-11-24 22:06:50,038 	 inspect_sb_benchmark.py 	 INFO 	 Benchmark Directory: experiments/empirical/d2/moons-K200-isotropic/brownian_s0.1
+2026-11-24 22:06:50,038 	 inspect_sb_benchmark.py 	 INFO 	 SB Config: {'mode': 'empirical', 'geometry': 'manifold', 'n_components': 200, 'cov_type': 'isotropic', 'var': 0.001, 'radius': 2.0, 'prior_std': 1.0, 'bridge_seed': 99, 'base_dataset': {'type': 'moons', 'train_samples': 20000, 'test_samples': 2000}}
+2026-11-24 22:06:50,677 	 inspect_sb_benchmark.py 	 INFO 	 === Inspecting SB-empirical-K200-d2 (ref=brownian, K=200, d=2, cov=isotropic) ===
+2026-11-24 22:06:50,679 	 inspect_sb_benchmark.py 	 INFO 	   train.x    | n= 50000 | E[|x|^2]/d= 1.0035 | min= -4.10 | max=  4.58 | mean[:4]=[ 0.001 -0.01 ]
+2026-11-24 22:06:50,680 	 inspect_sb_benchmark.py 	 INFO 	   train.y    | n= 50000 | E[|x|^2]/d= 0.7171 | min= -2.38 | max=  2.47 | mean[:4]=[ 0.003 -0.008]
+2026-11-24 22:06:50,681 	 inspect_sb_benchmark.py 	 INFO 	   test.x     | n=  2000 | E[|x|^2]/d= 0.9869 | min= -3.45 | max=  4.18 | mean[:4]=[0.044 0.027]
+2026-11-24 22:06:50,681 	 inspect_sb_benchmark.py 	 INFO 	   test.y     | n=  2000 | E[|x|^2]/d= 0.6948 | min= -2.28 | max=  2.33 | mean[:4]=[ 0.035 -0.002]
+2026-11-24 22:06:50,687 	 inspect_sb_benchmark.py 	 INFO 	   PCA Spectrum (top-2=100.0%): [67.1, 32.9]%
+2026-11-24 22:06:50,696 	 inspect_sb_benchmark.py 	 INFO 	   Posterior K_eff(x): mean=4.85 | median=4.55 | [p10, p90]=[1.84, 8.40] (K=200 -> nonlinear multi-mode stochastic branching)
+2026-11-24 22:06:52,420 	 inspect_sb_benchmark.py 	 INFO 	   Oracle Self-Check cBW_2^2-UVP: 0.0060% (Wishart ceiling: <1.59%)
+2026-11-24 22:06:52,420 	 inspect_sb_benchmark.py 	 INFO 	   All assertions passed.
+2026-11-24 22:06:53,261 	 inspect_sb_benchmark.py 	 INFO 	 Saved config snapshot -> experiments/empirical/d2/moons-K200-isotropic/brownian_s0.1/inspect_config.log
+2026-11-24 22:06:53,261 	 inspect_sb_benchmark.py 	 INFO 	 Saved inspection log  -> experiments/empirical/d2/moons-K200-isotropic/brownian_s0.1/inspect.log
+2026-11-24 22:06:53,261 	 inspect_sb_benchmark.py 	 INFO 	 Saved diagnostic plot -> experiments/empirical/d2/moons-K200-isotropic/brownian_s0.1/inspect.png

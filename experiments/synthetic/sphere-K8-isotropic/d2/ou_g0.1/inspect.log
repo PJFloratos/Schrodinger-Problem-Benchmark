@@ -1,0 +1,14 @@
+2026-11-24 22:00:35,465 	 inspect_sb_benchmark.py 	 INFO 	 Benchmark Directory: experiments/synthetic/sphere-K8-isotropic/d2/ou_g0.1
+2026-11-24 22:00:35,465 	 inspect_sb_benchmark.py 	 INFO 	 SB Config: {'mode': 'synthetic', 'geometry': 'sphere', 'n_components': 8, 'cov_type': 'isotropic', 'var': 0.01, 'radius': 3.0, 'prior_std': 1.0, 'bridge_seed': 99, 'base_dataset': {'type': 'moons', 'train_samples': 20000, 'test_samples': 2000}}
+2026-11-24 22:00:35,493 	 inspect_sb_benchmark.py 	 INFO 	 === Inspecting SB-synthetic-K8-d2 (ref=ou, K=8, d=2, cov=isotropic) ===
+2026-11-24 22:00:35,495 	 inspect_sb_benchmark.py 	 INFO 	   train.x    | n= 50000 | E[|x|^2]/d= 1.0035 | min= -4.10 | max=  4.58 | mean[:4]=[ 0.001 -0.01 ]
+2026-11-24 22:00:35,496 	 inspect_sb_benchmark.py 	 INFO 	   train.y    | n= 50000 | E[|x|^2]/d= 4.2182 | min= -3.34 | max=  3.40 | mean[:4]=[ 0.001 -0.013]
+2026-11-24 22:00:35,496 	 inspect_sb_benchmark.py 	 INFO 	   test.x     | n=  2000 | E[|x|^2]/d= 0.9869 | min= -3.45 | max=  4.18 | mean[:4]=[0.044 0.027]
+2026-11-24 22:00:35,496 	 inspect_sb_benchmark.py 	 INFO 	   test.y     | n=  2000 | E[|x|^2]/d= 4.2178 | min= -3.21 | max=  3.22 | mean[:4]=[0.082 0.025]
+2026-11-24 22:00:35,498 	 inspect_sb_benchmark.py 	 INFO 	   PCA Spectrum (top-2=100.0%): [50.2, 49.8]%
+2026-11-24 22:00:35,498 	 inspect_sb_benchmark.py 	 INFO 	   Posterior K_eff(x): mean=1.64 | median=1.49 | [p10, p90]=[1.03, 2.19] (K=8 -> nonlinear multi-mode stochastic branching)
+2026-11-24 22:00:35,594 	 inspect_sb_benchmark.py 	 INFO 	   Oracle Self-Check cBW_2^2-UVP: 0.0441% (Wishart ceiling: <1.59%)
+2026-11-24 22:00:35,594 	 inspect_sb_benchmark.py 	 INFO 	   All assertions passed.
+2026-11-24 22:00:36,390 	 inspect_sb_benchmark.py 	 INFO 	 Saved config snapshot -> experiments/synthetic/sphere-K8-isotropic/d2/ou_g0.1/inspect_config.log
+2026-11-24 22:00:36,390 	 inspect_sb_benchmark.py 	 INFO 	 Saved inspection log  -> experiments/synthetic/sphere-K8-isotropic/d2/ou_g0.1/inspect.log
+2026-11-24 22:00:36,390 	 inspect_sb_benchmark.py 	 INFO 	 Saved diagnostic plot -> experiments/synthetic/sphere-K8-isotropic/d2/ou_g0.1/inspect.png

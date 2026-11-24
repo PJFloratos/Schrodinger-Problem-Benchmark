@@ -1,0 +1,10 @@
+reference: brownian_s0.1
+mode: synthetic
+type: synthetic
+geometry: sphere
+n_components: 1
+cov_type: isotropic
+var: 0.1
+radius: 3.0
+prior_std: 0.5
+bridge_seed: 99

@@ -1,0 +1,14 @@
+2026-11-24 19:34:48,089 	 inspect_sb_benchmark.py 	 INFO 	 Benchmark Directory: experiments/synthetic/sphere-K1-isotropic/d10/brownian_s0.1
+2026-11-24 19:34:48,089 	 inspect_sb_benchmark.py 	 INFO 	 SB Config: {'mode': 'synthetic', 'geometry': 'sphere', 'n_components': 1, 'cov_type': 'isotropic', 'var': 0.1, 'radius': 3.0, 'prior_std': 0.5, 'bridge_seed': 99, 'base_dataset': {'type': '8gaussians', 'train_samples': 20000, 'test_samples': 2000}}
+2026-11-24 19:34:48,116 	 inspect_sb_benchmark.py 	 INFO 	 === Inspecting SB-synthetic-K1-d10 (ref=brownian, K=1, d=10, cov=isotropic) ===
+2026-11-24 19:34:48,119 	 inspect_sb_benchmark.py 	 INFO 	   train.x    | n= 50000 | E[|x|^2]/d= 0.2498 | min= -2.16 | max=  2.29 | mean[:4]=[ 0.002  0.     0.002 -0.004]
+2026-11-24 19:34:48,120 	 inspect_sb_benchmark.py 	 INFO 	   train.y    | n= 50000 | E[|x|^2]/d= 0.2228 | min= -2.02 | max=  2.19 | mean[:4]=[0.087 0.086 0.088 0.082]
+2026-11-24 19:34:48,120 	 inspect_sb_benchmark.py 	 INFO 	   test.x     | n=  2000 | E[|x|^2]/d= 0.2493 | min= -1.84 | max=  2.16 | mean[:4]=[0.025 0.002 0.002 0.024]
+2026-11-24 19:34:48,121 	 inspect_sb_benchmark.py 	 INFO 	   test.y     | n=  2000 | E[|x|^2]/d= 0.2233 | min= -1.68 | max=  2.12 | mean[:4]=[0.11  0.087 0.085 0.111]
+2026-11-24 19:34:48,132 	 inspect_sb_benchmark.py 	 INFO 	   PCA Spectrum (top-2=20.7%, top-8=80.7%): [10.4, 10.3, 10.2, 10.2, 10. ,  9.9,  9.9,  9.8,  9.8,  9.5]%
+2026-11-24 19:34:48,135 	 inspect_sb_benchmark.py 	 INFO 	   Posterior K_eff(x): mean=1.00 | median=1.00 | [p10, p90]=[1.00, 1.00] (K=1 -> unimodal Gaussian (linear drift))
+2026-11-24 19:34:48,192 	 inspect_sb_benchmark.py 	 INFO 	   Oracle Self-Check cBW_2^2-UVP: 0.0322% (Wishart ceiling: <1.95%)
+2026-11-24 19:34:48,192 	 inspect_sb_benchmark.py 	 INFO 	   All assertions passed.
+2026-11-24 19:34:48,759 	 inspect_sb_benchmark.py 	 INFO 	 Saved config snapshot -> experiments/synthetic/sphere-K1-isotropic/d10/brownian_s0.1/inspect_config.log
+2026-11-24 19:34:48,759 	 inspect_sb_benchmark.py 	 INFO 	 Saved inspection log  -> experiments/synthetic/sphere-K1-isotropic/d10/brownian_s0.1/inspect.log
+2026-11-24 19:34:48,759 	 inspect_sb_benchmark.py 	 INFO 	 Saved diagnostic plot -> experiments/synthetic/sphere-K1-isotropic/d10/brownian_s0.1/inspect.png

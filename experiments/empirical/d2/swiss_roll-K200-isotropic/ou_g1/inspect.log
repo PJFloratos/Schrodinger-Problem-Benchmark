@@ -1,0 +1,14 @@
+2026-11-24 20:12:10,303 	 inspect_sb_benchmark.py 	 INFO 	 Benchmark Directory: experiments/empirical/d2/swiss_roll-K200-isotropic/ou_g1
+2026-11-24 20:12:10,303 	 inspect_sb_benchmark.py 	 INFO 	 SB Config: {'mode': 'empirical', 'geometry': 'manifold', 'n_components': 200, 'cov_type': 'isotropic', 'var': 0.001, 'radius': 3.0, 'prior_std': 1.0, 'bridge_seed': 99, 'base_dataset': {'type': 'swiss_roll', 'train_samples': 20000, 'test_samples': 2000}}
+2026-11-24 20:12:11,060 	 inspect_sb_benchmark.py 	 INFO 	 === Inspecting SB-empirical-K200-d2 (ref=ou, K=200, d=2, cov=isotropic) ===
+2026-11-24 20:12:11,061 	 inspect_sb_benchmark.py 	 INFO 	   train.x    | n= 50000 | E[|x|^2]/d= 1.0035 | min= -4.10 | max=  4.58 | mean[:4]=[ 0.001 -0.01 ]
+2026-11-24 20:12:11,062 	 inspect_sb_benchmark.py 	 INFO 	   train.y    | n= 50000 | E[|x|^2]/d= 0.7693 | min= -1.83 | max=  2.20 | mean[:4]=[ 0.126 -0.02 ]
+2026-11-24 20:12:11,062 	 inspect_sb_benchmark.py 	 INFO 	   test.x     | n=  2000 | E[|x|^2]/d= 0.9869 | min= -3.45 | max=  4.18 | mean[:4]=[0.044 0.027]
+2026-11-24 20:12:11,062 	 inspect_sb_benchmark.py 	 INFO 	   test.y     | n=  2000 | E[|x|^2]/d= 0.7545 | min= -1.81 | max=  2.12 | mean[:4]=[0.131 0.007]
+2026-11-24 20:12:11,064 	 inspect_sb_benchmark.py 	 INFO 	   PCA Spectrum (top-2=100.0%): [53.1, 46.9]%
+2026-11-24 20:12:11,069 	 inspect_sb_benchmark.py 	 INFO 	   Posterior K_eff(x): mean=153.79 | median=155.85 | [p10, p90]=[140.29, 164.54] (K=200 -> weak conditioning (near-independent coupling))
+2026-11-24 20:12:12,779 	 inspect_sb_benchmark.py 	 INFO 	   Oracle Self-Check cBW_2^2-UVP: 0.2817% (Wishart ceiling: <1.59%)
+2026-11-24 20:12:12,779 	 inspect_sb_benchmark.py 	 INFO 	   All assertions passed.
+2026-11-24 20:12:13,596 	 inspect_sb_benchmark.py 	 INFO 	 Saved config snapshot -> experiments/empirical/d2/swiss_roll-K200-isotropic/ou_g1/inspect_config.log
+2026-11-24 20:12:13,596 	 inspect_sb_benchmark.py 	 INFO 	 Saved inspection log  -> experiments/empirical/d2/swiss_roll-K200-isotropic/ou_g1/inspect.log
+2026-11-24 20:12:13,596 	 inspect_sb_benchmark.py 	 INFO 	 Saved diagnostic plot -> experiments/empirical/d2/swiss_roll-K200-isotropic/ou_g1/inspect.png

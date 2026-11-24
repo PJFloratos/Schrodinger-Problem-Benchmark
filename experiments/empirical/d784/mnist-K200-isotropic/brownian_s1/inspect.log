@@ -1,0 +1,14 @@
+2026-11-24 21:06:47,521 	 inspect_sb_benchmark.py 	 INFO 	 Benchmark Directory: experiments/empirical/d784/mnist-K200-isotropic/brownian_s1
+2026-11-24 21:06:47,521 	 inspect_sb_benchmark.py 	 INFO 	 SB Config: {'mode': 'empirical', 'geometry': 'manifold', 'n_components': 200, 'cov_type': 'isotropic', 'var': 0.003, 'radius': 2.0, 'prior_std': 1.0, 'bridge_seed': 99, 'base_dataset': {'type': 'mnist', 'train_samples': 20000, 'test_samples': 2000}}
+2026-11-24 21:07:24,920 	 inspect_sb_benchmark.py 	 INFO 	 === Inspecting SB-empirical-K200-d784 (ref=brownian, K=200, d=784, cov=isotropic) ===
+2026-11-24 21:07:25,009 	 inspect_sb_benchmark.py 	 INFO 	   train.x    | n= 50000 | E[|x|^2]/d= 0.9999 | min= -5.75 | max=  5.51 | mean[:4]=[ 3.234e-03 -1.361e-05  2.139e-03 -1.806e-03]
+2026-11-24 21:07:25,094 	 inspect_sb_benchmark.py 	 INFO 	   train.y    | n= 50000 | E[|x|^2]/d= 0.0526 | min= -0.28 | max=  1.22 | mean[:4]=[ 1.582e-05 -4.580e-05  5.059e-04 -5.301e-05]
+2026-11-24 21:07:25,097 	 inspect_sb_benchmark.py 	 INFO 	   test.x     | n=  2000 | E[|x|^2]/d= 1.0011 | min= -4.85 | max=  4.88 | mean[:4]=[ 0.033  0.003 -0.006 -0.025]
+2026-11-24 21:07:25,100 	 inspect_sb_benchmark.py 	 INFO 	   test.y     | n=  2000 | E[|x|^2]/d= 0.0531 | min= -0.28 | max=  1.19 | mean[:4]=[-1.536e-03 -1.784e-04  7.050e-05  3.069e-04]
+2026-11-24 21:07:26,389 	 inspect_sb_benchmark.py 	 INFO 	   PCA Spectrum (top-2=30.1%, top-8=63.1%): [18.8, 11.3,  7.7,  7.3,  6.1,  4.8,  4. ,  3.2,  2.9,  2.2]%
+2026-11-24 21:07:28,312 	 inspect_sb_benchmark.py 	 INFO 	   Posterior K_eff(x): mean=5.14 | median=4.40 | [p10, p90]=[1.80, 9.49] (K=200 -> nonlinear multi-mode stochastic branching)
+2026-11-24 21:11:38,092 	 inspect_sb_benchmark.py 	 INFO 	   Oracle Self-Check cBW_2^2-UVP: 2.6632% (Wishart ceiling: <19.14%)
+2026-11-24 21:11:38,094 	 inspect_sb_benchmark.py 	 INFO 	   All assertions passed.
+2026-11-24 21:11:38,632 	 inspect_sb_benchmark.py 	 INFO 	 Saved config snapshot -> experiments/empirical/d784/mnist-K200-isotropic/brownian_s1/inspect_config.log
+2026-11-24 21:11:38,632 	 inspect_sb_benchmark.py 	 INFO 	 Saved inspection log  -> experiments/empirical/d784/mnist-K200-isotropic/brownian_s1/inspect.log
+2026-11-24 21:11:38,632 	 inspect_sb_benchmark.py 	 INFO 	 Saved diagnostic plot -> experiments/empirical/d784/mnist-K200-isotropic/brownian_s1/inspect.png

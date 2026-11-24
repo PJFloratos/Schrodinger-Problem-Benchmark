@@ -1,0 +1,14 @@
+2026-11-24 21:13:53,757 	 inspect_sb_benchmark.py 	 INFO 	 Benchmark Directory: experiments/empirical/d2/swiss_roll-K200-isotropic/brownian_s1
+2026-11-24 21:13:53,758 	 inspect_sb_benchmark.py 	 INFO 	 SB Config: {'mode': 'empirical', 'geometry': 'manifold', 'n_components': 200, 'cov_type': 'isotropic', 'var': 0.001, 'radius': 2.0, 'prior_std': 1.0, 'bridge_seed': 99, 'base_dataset': {'type': 'swiss_roll', 'train_samples': 20000, 'test_samples': 2000}}
+2026-11-24 21:13:54,303 	 inspect_sb_benchmark.py 	 INFO 	 === Inspecting SB-empirical-K200-d2 (ref=brownian, K=200, d=2, cov=isotropic) ===
+2026-11-24 21:13:54,304 	 inspect_sb_benchmark.py 	 INFO 	   train.x    | n= 50000 | E[|x|^2]/d= 1.0035 | min= -4.10 | max=  4.58 | mean[:4]=[ 0.001 -0.01 ]
+2026-11-24 21:13:54,304 	 inspect_sb_benchmark.py 	 INFO 	   train.y    | n= 50000 | E[|x|^2]/d= 1.0276 | min= -1.86 | max=  2.19 | mean[:4]=[ 0.002 -0.002]
+2026-11-24 21:13:54,305 	 inspect_sb_benchmark.py 	 INFO 	   test.x     | n=  2000 | E[|x|^2]/d= 0.9869 | min= -3.45 | max=  4.18 | mean[:4]=[0.044 0.027]
+2026-11-24 21:13:54,305 	 inspect_sb_benchmark.py 	 INFO 	   test.y     | n=  2000 | E[|x|^2]/d= 1.0184 | min= -1.80 | max=  2.15 | mean[:4]=[0.004 0.015]
+2026-11-24 21:13:54,311 	 inspect_sb_benchmark.py 	 INFO 	   PCA Spectrum (top-2=100.0%): [55.3, 44.7]%
+2026-11-24 21:13:54,319 	 inspect_sb_benchmark.py 	 INFO 	   Posterior K_eff(x): mean=124.83 | median=127.30 | [p10, p90]=[78.98, 167.17] (K=200 -> nonlinear multi-mode stochastic branching)
+2026-11-24 21:13:55,727 	 inspect_sb_benchmark.py 	 INFO 	   Oracle Self-Check cBW_2^2-UVP: 0.2058% (Wishart ceiling: <1.59%)
+2026-11-24 21:13:55,727 	 inspect_sb_benchmark.py 	 INFO 	   All assertions passed.
+2026-11-24 21:13:56,546 	 inspect_sb_benchmark.py 	 INFO 	 Saved config snapshot -> experiments/empirical/d2/swiss_roll-K200-isotropic/brownian_s1/inspect_config.log
+2026-11-24 21:13:56,546 	 inspect_sb_benchmark.py 	 INFO 	 Saved inspection log  -> experiments/empirical/d2/swiss_roll-K200-isotropic/brownian_s1/inspect.log
+2026-11-24 21:13:56,546 	 inspect_sb_benchmark.py 	 INFO 	 Saved diagnostic plot -> experiments/empirical/d2/swiss_roll-K200-isotropic/brownian_s1/inspect.png

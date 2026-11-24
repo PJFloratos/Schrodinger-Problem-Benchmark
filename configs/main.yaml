@@ -1,6 +1,6 @@
 defaults:
-  - dataset: toy2d
-  - model: fbsde
+  - dataset: sb_benchmark
+  - model: iam
   - _self_
 
 # --- Reproducibility & Hardware ---
@@ -13,7 +13,7 @@ use_ema: false
 use_compile: false
 
 # --- Global Physics & Training Defaults ---
-reference: "brownian"   # in ['brownian', 'ou']
+reference: "ou"   # in ['brownian', 'ou']
 sigma: 0.1
 gamma: 1.0
 epochs: 50
@@ -35,6 +35,9 @@ hidden_dim: 128
 time_dim: 64
 
 # --- Paths  ---
+experiments_dir: "./experiments"
+variant: "base"
+
 base_plot_path: "./plots"
 base_model_path: "./models"
 base_log_path: "./logs"
@@ -46,59 +49,60 @@ logs_path: "${base_log_path}/${dataset.name}/${model.name}"
 
 ################################################################################
 #
-# Next:
-#     - Two 'generating samples' in evaluation bug
-#     - Decouple evaluation from training and create an eval script (pipeline)
-#     - Update for OU reference & start at an arbitrary p_prior
-#     - Add the action matching model
-#     - Examine if the evaluation/generation can be faster
-#     - Read the benchmark paper (implement and extend it)
+#                       Benchmark Folder Structure
 #
+# experiments/
+# ├── synthetic/
+# │   └── <dataset>/
+# │       └── <dim>/
+# │           └── <ref_params>/
+# │               └── <solver>/
+# │                   └── <variant>/
+# │                       ├── configs.json
+# │                       ├── metrics.jsonl
+# │                       ├── logs/
+# │                       │   ├── train.log
+# │                       │   └── eval.log
+# │                       ├── checkpoints/
+# │                       │    ├── <checkpoint>.pth
+# │                       │    ├── best.pth
+# │                       │    └── last.pth
+# │                       └── plots/
+# │                           └── <plot>.png
+# │
+# ├── real_data/
+# │   └── <dataset>/
+# │        └── <space>/                    # full | pca_k64 | pca_k128
+# │             └── <ref_param>/
+# │                  └── <solver>/
+# │                       └── <variant>/
+# │                            └── ...     #  same structure as above
 #
-# Experiments Structure:
-#     - experiments/
-#     - experiments/<dataset>/
-#     - experiments/<dataset>/<model_type>/
-#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/
+################################################################################
+
+
+################################################################################
 #
-#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/logs/
-#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/logs/settings.log
-#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/logs/train.log
-#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/logs/eval.log
-#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/logs/metrics.jsonl
+#                                 Next Steps
 #
-#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/checkpoints/
-#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/checkpoints/<name>.pth
+#     1) Dyamical Restructure
+#         - All solver accept s-BM and OU references
+#         - Dynamics file per solver
+#         - All solver start from N(0, I)
+#         - Solve training's evaluation bugs
 #
-#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/plots/
-#     - experiments/<dataset>/<model_type>/<exp_name_[params]>/plots/<plot_name>.png
+#     2) SB Benchmark
+#         - Add benchmark creation dataset & examine expressivity
+#         - Decouple evaluation from training from the pipeline
 #
+################################################################################
+
+
+################################################################################
 #
-# Experiments Strategy:
-#     Benchmark Datasets:
-#         1) Schrodinger Bridge for Gaussian to Gaussian
-#         2) Schrodinger Bridge for Mixture of Gaussians
-#         3) Schrodinger Bridge knows by construction
+#                             Further Additions
 #
-#     Phase 1:
-#         - Start from N(0, sigma)
-#         - SDE, FM, LightSBM base cases
-#         - Start with the s-Brownian Motion reference
-#         - Proceed to the OU reference
-#
-#     Phase 2:
-#         - Use high dimensional dataset from (3) above
-#         - Use the best reference measure from above
-#         - Apply PCA and converge the models in the principal space
-#         - Examine the difference of the two Schrodinger Bridges
-#
-#     Phase 3:
-#         - Use MNIST and CIFAR10 datasets
-#         - Start with s-Brownian Motion and then OU
-#         - Does faster convergence to the SB lead to better FID?
-#
-#
-# Further Additions:
+#     - Discuss on starting from other distributions
 #     - Discuss the SP in the discrete setting
 #     - Discuss the SP in infinite dimensions
 #     - Discuss the unconstraint SP

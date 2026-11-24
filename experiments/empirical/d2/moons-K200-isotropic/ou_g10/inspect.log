@@ -1,0 +1,14 @@
+2026-11-24 21:19:41,766 	 inspect_sb_benchmark.py 	 INFO 	 Benchmark Directory: experiments/empirical/d2/moons-K200-isotropic/ou_g10
+2026-11-24 21:19:41,766 	 inspect_sb_benchmark.py 	 INFO 	 SB Config: {'mode': 'empirical', 'geometry': 'manifold', 'n_components': 200, 'cov_type': 'isotropic', 'var': 0.001, 'radius': 2.0, 'prior_std': 1.0, 'bridge_seed': 99, 'base_dataset': {'type': 'moons', 'train_samples': 20000, 'test_samples': 2000}}
+2026-11-24 21:19:42,316 	 inspect_sb_benchmark.py 	 INFO 	 === Inspecting SB-empirical-K200-d2 (ref=ou, K=200, d=2, cov=isotropic) ===
+2026-11-24 21:19:42,316 	 inspect_sb_benchmark.py 	 INFO 	   train.x    | n= 50000 | E[|x|^2]/d= 1.0035 | min= -4.10 | max=  4.58 | mean[:4]=[ 0.001 -0.01 ]
+2026-11-24 21:19:42,317 	 inspect_sb_benchmark.py 	 INFO 	   train.y    | n= 50000 | E[|x|^2]/d= 0.9945 | min= -2.32 | max=  2.35 | mean[:4]=[-0.002  0.   ]
+2026-11-24 21:19:42,317 	 inspect_sb_benchmark.py 	 INFO 	   test.x     | n=  2000 | E[|x|^2]/d= 0.9869 | min= -3.45 | max=  4.18 | mean[:4]=[0.044 0.027]
+2026-11-24 21:19:42,318 	 inspect_sb_benchmark.py 	 INFO 	   test.y     | n=  2000 | E[|x|^2]/d= 0.9857 | min= -2.24 | max=  2.31 | mean[:4]=[-0.067  0.006]
+2026-11-24 21:19:42,324 	 inspect_sb_benchmark.py 	 INFO 	   PCA Spectrum (top-2=100.0%): [81.8, 18.2]%
+2026-11-24 21:19:42,330 	 inspect_sb_benchmark.py 	 INFO 	   Posterior K_eff(x): mean=191.62 | median=191.62 | [p10, p90]=[191.62, 191.62] (K=200 -> weak conditioning (near-independent coupling))
+2026-11-24 21:19:43,719 	 inspect_sb_benchmark.py 	 INFO 	   Oracle Self-Check cBW_2^2-UVP: 0.2886% (Wishart ceiling: <1.59%)
+2026-11-24 21:19:43,720 	 inspect_sb_benchmark.py 	 INFO 	   All assertions passed.
+2026-11-24 21:19:44,531 	 inspect_sb_benchmark.py 	 INFO 	 Saved config snapshot -> experiments/empirical/d2/moons-K200-isotropic/ou_g10/inspect_config.log
+2026-11-24 21:19:44,531 	 inspect_sb_benchmark.py 	 INFO 	 Saved inspection log  -> experiments/empirical/d2/moons-K200-isotropic/ou_g10/inspect.log
+2026-11-24 21:19:44,531 	 inspect_sb_benchmark.py 	 INFO 	 Saved diagnostic plot -> experiments/empirical/d2/moons-K200-isotropic/ou_g10/inspect.png

@@ -1,0 +1,14 @@
+2026-11-24 19:49:43,886 	 inspect_sb_benchmark.py 	 INFO 	 Benchmark Directory: experiments/synthetic/manifold-K250-diagonal/d2/brownian_s0.1
+2026-11-24 19:49:43,886 	 inspect_sb_benchmark.py 	 INFO 	 SB Config: {'mode': 'synthetic', 'geometry': 'manifold', 'n_components': 250, 'cov_type': 'diagonal', 'var': 0.001, 'radius': 3.0, 'prior_std': 1.0, 'bridge_seed': 99, 'base_dataset': {'type': '8gaussians', 'train_samples': 20000, 'test_samples': 2000}}
+2026-11-24 19:49:44,426 	 inspect_sb_benchmark.py 	 INFO 	 === Inspecting SB-synthetic-K250-d2 (ref=brownian, K=250, d=2, cov=diagonal) ===
+2026-11-24 19:49:44,427 	 inspect_sb_benchmark.py 	 INFO 	   train.x    | n= 50000 | E[|x|^2]/d= 1.0035 | min= -4.10 | max=  4.58 | mean[:4]=[ 0.001 -0.01 ]
+2026-11-24 19:49:44,428 	 inspect_sb_benchmark.py 	 INFO 	   train.y    | n= 50000 | E[|x|^2]/d= 1.0818 | min= -3.00 | max=  3.32 | mean[:4]=[ 0.002 -0.002]
+2026-11-24 19:49:44,428 	 inspect_sb_benchmark.py 	 INFO 	   test.x     | n=  2000 | E[|x|^2]/d= 0.9869 | min= -3.45 | max=  4.18 | mean[:4]=[0.044 0.027]
+2026-11-24 19:49:44,429 	 inspect_sb_benchmark.py 	 INFO 	   test.y     | n=  2000 | E[|x|^2]/d= 1.0681 | min= -2.91 | max=  3.08 | mean[:4]=[0.039 0.038]
+2026-11-24 19:49:44,433 	 inspect_sb_benchmark.py 	 INFO 	   PCA Spectrum (top-2=100.0%): [50.2, 49.8]%
+2026-11-24 19:49:44,443 	 inspect_sb_benchmark.py 	 INFO 	   Posterior K_eff(x): mean=3.16 | median=2.97 | [p10, p90]=[1.79, 4.77] (K=250 -> nonlinear multi-mode stochastic branching)
+2026-11-24 19:49:46,643 	 inspect_sb_benchmark.py 	 INFO 	   Oracle Self-Check cBW_2^2-UVP: 0.0038% (Wishart ceiling: <1.59%)
+2026-11-24 19:49:46,643 	 inspect_sb_benchmark.py 	 INFO 	   All assertions passed.
+2026-11-24 19:49:47,449 	 inspect_sb_benchmark.py 	 INFO 	 Saved config snapshot -> experiments/synthetic/manifold-K250-diagonal/d2/brownian_s0.1/inspect_config.log
+2026-11-24 19:49:47,449 	 inspect_sb_benchmark.py 	 INFO 	 Saved inspection log  -> experiments/synthetic/manifold-K250-diagonal/d2/brownian_s0.1/inspect.log
+2026-11-24 19:49:47,449 	 inspect_sb_benchmark.py 	 INFO 	 Saved diagnostic plot -> experiments/synthetic/manifold-K250-diagonal/d2/brownian_s0.1/inspect.png

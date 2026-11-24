@@ -1,0 +1,14 @@
+2026-11-24 22:03:23,176 	 inspect_sb_benchmark.py 	 INFO 	 Benchmark Directory: experiments/synthetic/manifold-K250-isotropic/d100/ou_g0.1
+2026-11-24 22:03:23,176 	 inspect_sb_benchmark.py 	 INFO 	 SB Config: {'mode': 'synthetic', 'geometry': 'manifold', 'n_components': 250, 'cov_type': 'isotropic', 'var': 0.002, 'radius': 2.0, 'prior_std': 1.0, 'bridge_seed': 99, 'base_dataset': {'type': 'moons', 'train_samples': 20000, 'test_samples': 2000}}
+2026-11-24 22:03:23,533 	 inspect_sb_benchmark.py 	 INFO 	 === Inspecting SB-synthetic-K250-d100 (ref=ou, K=250, d=100, cov=isotropic) ===
+2026-11-24 22:03:23,549 	 inspect_sb_benchmark.py 	 INFO 	   train.x    | n= 50000 | E[|x|^2]/d= 0.9993 | min= -5.21 | max=  4.93 | mean[:4]=[0.002 0.003 0.01  0.003]
+2026-11-24 22:03:23,561 	 inspect_sb_benchmark.py 	 INFO 	   train.y    | n= 50000 | E[|x|^2]/d= 0.0419 | min= -0.80 | max=  0.78 | mean[:4]=[-0.001  0.001  0.001  0.002]
+2026-11-24 22:03:23,562 	 inspect_sb_benchmark.py 	 INFO 	   test.x     | n=  2000 | E[|x|^2]/d= 0.9980 | min= -4.56 | max=  4.43 | mean[:4]=[ 0.019 -0.018 -0.054  0.009]
+2026-11-24 22:03:23,563 	 inspect_sb_benchmark.py 	 INFO 	   test.y     | n=  2000 | E[|x|^2]/d= 0.0419 | min= -0.77 | max=  0.69 | mean[:4]=[-0.002  0.004 -0.003 -0.004]
+2026-11-24 22:03:23,581 	 inspect_sb_benchmark.py 	 INFO 	   PCA Spectrum (top-2=24.6%, top-8=95.5%): [12.4, 12.3, 12.1, 12. , 11.8, 11.7, 11.7, 11.6,  0.1,  0.1]%
+2026-11-24 22:03:23,584 	 inspect_sb_benchmark.py 	 INFO 	   Posterior K_eff(x): mean=18.19 | median=14.88 | [p10, p90]=[9.99, 31.12] (K=250 -> nonlinear multi-mode stochastic branching)
+2026-11-24 22:03:26,215 	 inspect_sb_benchmark.py 	 INFO 	   Oracle Self-Check cBW_2^2-UVP: 0.1846% (Wishart ceiling: <3.75%)
+2026-11-24 22:03:26,215 	 inspect_sb_benchmark.py 	 INFO 	   All assertions passed.
+2026-11-24 22:03:26,776 	 inspect_sb_benchmark.py 	 INFO 	 Saved config snapshot -> experiments/synthetic/manifold-K250-isotropic/d100/ou_g0.1/inspect_config.log
+2026-11-24 22:03:26,776 	 inspect_sb_benchmark.py 	 INFO 	 Saved inspection log  -> experiments/synthetic/manifold-K250-isotropic/d100/ou_g0.1/inspect.log
+2026-11-24 22:03:26,776 	 inspect_sb_benchmark.py 	 INFO 	 Saved diagnostic plot -> experiments/synthetic/manifold-K250-isotropic/d100/ou_g0.1/inspect.png

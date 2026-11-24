@@ -1,8 +1,14 @@
 name: "IMF"
 type: "imf"
 
-sim_steps: 50
-num_iter: 5000
-refresh_every: 500
+# sim_steps: 50
+# num_iter: 5000
+# refresh_every: 500
+# num_cache_batches: 10
+# save_interval: 500
+
+sim_steps: 30
+num_iter: 100
+refresh_every: 400
 num_cache_batches: 10
 save_interval: 500
