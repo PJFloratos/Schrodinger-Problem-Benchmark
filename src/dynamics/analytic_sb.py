@@ -92,6 +92,11 @@ class AnalyticSchrodingerBridge:
         self._post_noise_factor = self._compute_posterior_noise_factor()
 
     def _validate_and_format_covs(self, covs: torch.Tensor) -> torch.Tensor:
+        """
+        Casts covs to the target device/dtype, verifies shape compatibility—(K,)
+        for isotropic, (K, d) for diagonal, (K, d, d) for full, and enforces
+        strict positive definiteness.
+        """
         covs = covs.to(device=self.device, dtype=self.dtype)
         if self.cov_type == "isotropic":
             if covs.ndim == 0:
@@ -122,6 +127,9 @@ class AnalyticSchrodingerBridge:
         return covs
 
     def to(self, device: Union[str, torch.device]) -> AnalyticSchrodingerBridge:
+        """
+        Moves all stored parameter tensors and cached buffers to device and returns self.
+        """
         self.device = torch.device(device)
         self.means = self.means.to(self.device)
         self.log_weights = self.log_weights.to(self.device)
@@ -140,7 +148,13 @@ class AnalyticSchrodingerBridge:
     # Internal Linear-Gaussian Mixture Algebra
     # ------------------------------------------------------------------
     def _compute_posterior_cov(self, v01: float) -> torch.Tensor:
-        """Computes S_k = Sigma_k - Sigma_k (Sigma_k + V_{01} I_d)^{-1} Sigma_k."""
+        """
+        Computes Computes the exact conditional covariance S_k of component k:
+         S_k = Sigma_k - Sigma_k (Sigma_k + V_{01} I_d)^{-1} Sigma_k
+
+        Using scalar/elementwise division for isotropic/diagonal types and the
+        precomputed eigenspectrum for full covariances (symmetrizing the result).
+        """
         if self.cov_type in ("isotropic", "diagonal"):
             return (self.covs * v01) / (self.covs + v01)
 
@@ -148,12 +162,14 @@ class AnalyticSchrodingerBridge:
         S = (
             self._cov_eigvecs * post_eigvals.unsqueeze(1)
         ) @ self._cov_eigvecs.transpose(-1, -2)
+
         return 0.5 * (S + S.transpose(-1, -2))
 
     def _compute_posterior_noise_factor(self) -> torch.Tensor:
         """Precomputes sqrt(S_k) (isotropic/diagonal) or Cholesky L_{S_k} (full)."""
         if self.cov_type in ("isotropic", "diagonal"):
             return torch.sqrt(self._post_cov_param)
+
         return torch.linalg.cholesky(self._post_cov_param)
 
     def _posterior_weights(
@@ -211,6 +227,7 @@ class AnalyticSchrodingerBridge:
             return weights
 
         log_unnorm = self.log_weights.unsqueeze(0) - 0.5 * (log_det + sq_mahalanobis)
+
         return torch.softmax(log_unnorm, dim=-1)
 
     def _marginal_precision_stats(
@@ -294,7 +311,9 @@ class AnalyticSchrodingerBridge:
     def effective_num_modes(
         self, x: torch.Tensor, chunk_size: int = 512
     ) -> torch.Tensor:
-        """Computes posterior perplexity K_eff(x) = exp(H(tilde_w(. | x))) in [1, K]."""
+        """
+        Computes posterior perplexity K_eff(x) = exp(H(tilde_w(. | x))) in [1, K]
+        """
         x = x.to(device=self.device, dtype=self.dtype)
         B = x.shape[0]
         out = torch.empty((B,), device=self.device, dtype=self.dtype)
@@ -392,7 +411,9 @@ class AnalyticSchrodingerBridge:
     def sample_joint(
         self, n_samples: int, gen: Optional[torch.Generator] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Draws paired ground-truth coupling samples (x, y) ~ pi^*."""
+        """
+        Draws paired ground-truth coupling samples (x, y) ~ pi^*
+        """
         x = self.sample_prior(n_samples, gen=gen)
         y = self.sample_conditional(x, gen=gen)
 
@@ -402,7 +423,9 @@ class AnalyticSchrodingerBridge:
     def sample_target(
         self, n_samples: int, gen: Optional[torch.Generator] = None
     ) -> torch.Tensor:
-        """Draws marginal target samples y ~ nu = int pi^*(. | x) dmu(x)."""
+        """
+        Draws marginal target samples y ~ nu = int pi^*(. | x) dmu(x)
+        """
         _, y = self.sample_joint(n_samples, gen=gen)
 
         return y
@@ -417,7 +440,7 @@ class AnalyticSchrodingerBridge:
         return_noise: bool = False,
     ) -> torch.Tensor:
         """
-        Exact intermediate state X_t ~ T_{v^*}(. | X_0=x0, X_1=x1) = R_{t|0,1}(. | x0, x1),
+        Exact intermediate state X_t ~  R_{t|0,1}(. | x0, x1),
         enabling discretization-free Forward KL evaluation.
         """
         return self.ref.sample_bridge(x0, x1, t, gen=gen, return_noise=return_noise)
