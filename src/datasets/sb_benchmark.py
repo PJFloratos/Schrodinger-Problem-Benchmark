@@ -19,7 +19,7 @@ GeometryType = Literal["sphere", "manifold"]
 
 class SBBenchmarkDataset(Dataset):
     """
-    Thin PyTorch Dataset wrapper around `AnalyticSchrodingerBridge` for standard
+    Dataset wrapper around `AnalyticSchrodingerBridge` for standard
     DataLoader training loops. Generates a fixed finite split of (x, y) ~ pi^*.
     """
 
@@ -38,9 +38,20 @@ class SBBenchmarkDataset(Dataset):
         gen = torch.Generator(device=bridge.device).manual_seed(seed)
         self.x, self.y = bridge.sample_joint(n_samples, gen=gen)
 
+        self.data = self.y
+        self.mean = np.zeros(bridge.d, dtype=np.float64)
+        self.scale = 1.0
+
     # ------------------------------------------------------------------
     # Internal Helpers & Dataset API
     # ------------------------------------------------------------------
+    @property
+    def stats(self) -> Tuple[np.ndarray, float]:
+        return self.mean, self.scale
+
+    def inverse_transform(self, x: torch.Tensor) -> torch.Tensor:
+        return x
+
     def __len__(self) -> int:
         return self.n_samples
 
